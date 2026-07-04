@@ -120,6 +120,35 @@ def plot_forecasts(df_cpu, forecast_cpu, df_mem, forecast_mem, df_web, forecast_
     plt.savefig('forecast.png')
     print("Successfully generated blueprint graphs in 'forecast.png'")
 
+def export_forecast_json(forecast_cpu, forecast_mem, forecast_web):
+    import json
+    
+    def prepare_data(df):
+        if df is None or df.empty:
+            return []
+        # Take the last 60 forecasted points (representing future trends)
+        df_pred = df.tail(60).copy()
+        data = []
+        for _, row in df_pred.iterrows():
+            data.append({
+                "ds": row['ds'].strftime("%Y-%m-%dT%H:%M:%S"),
+                "yhat": round(float(row['yhat']), 2),
+                "yhat_lower": round(float(row['yhat_lower']), 2),
+                "yhat_upper": round(float(row['yhat_upper']), 2)
+            })
+        return data
+
+    output = {
+        "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "cpu": prepare_data(forecast_cpu),
+        "memory": prepare_data(forecast_mem),
+        "web": prepare_data(forecast_web)
+    }
+    
+    with open("forecast.json", "w") as f:
+        json.dump(output, f, indent=2)
+    print("Successfully exported numeric predictions to 'forecast.json'")
+
 if __name__ == "__main__":
     df_cpu, df_mem, df_web = fetch_data()
     
@@ -133,3 +162,5 @@ if __name__ == "__main__":
         forecast_web = train_and_predict(df_web, "Web Response", freq='60s', periods=30)
         
     plot_forecasts(df_cpu, forecast_cpu, df_mem, forecast_mem, df_web, forecast_web)
+    export_forecast_json(forecast_cpu, forecast_mem, forecast_web)
+

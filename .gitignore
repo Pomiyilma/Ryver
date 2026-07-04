@@ -8,10 +8,16 @@ __pycache__/
 *.pyc
 venv/
 env/
+.venv/
+.venv-old-bloated/
+.DS_Store
+Thumbs.db
 
 # Node/React
 node_modules/
+frontend/node_modules/
 build/
+frontend/build/
 dist/
 
 # OS/Logs
@@ -20,4 +26,29 @@ dist/
 
 # Project specific
 forecast.png
+forecast.json
 *.csv
+
+
+# Data
+cloud_system_logs.csv
+system_logs.csv
+forecast.json
+forecast.png
+
+# AI / Editor Caches
+.agent/
+.claude/
+.codebuddy/
+.codex/
+.continue/
+.cursor/
+.gemini/
+.github/prompts/
+.kiro/
+.opencode/
+.qoder/
+.roo/
+.trae/
+.windsurf/
+
