@@ -6,7 +6,6 @@ import {
   IconAlertCircle,
   IconCheck,
   IconRefresh,
-  IconSettings,
   IconChartLine,
   IconClock,
   IconHistory,
@@ -73,7 +72,7 @@ function App() {
   const fetchData = useCallback(async () => {
     try {
       setError(null);
-      
+
       const [liveRes, histRes, foreRes] = await Promise.all([
         fetch(`${API_BASE}/api/metrics/live`),
         fetch(`${API_BASE}/api/metrics/history`),
@@ -221,7 +220,7 @@ function App() {
                 Simulated Mode
               </span>
             )}
-            
+
             {!live?.isSimulated && live && (
               <span className="bg-brand-emerald/10 text-brand-emerald border border-brand-emerald/20 text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5">
                 <IconCheck className="h-3.5 w-3.5" />
@@ -231,8 +230,8 @@ function App() {
 
             <div className="flex items-center gap-2 bg-espresso-light/40 border border-white/5 rounded-lg px-2.5 py-1 text-xs">
               <IconClock className="h-3.5 w-3.5 text-zinc-400" />
-              <select 
-                value={refreshInterval} 
+              <select
+                value={refreshInterval}
                 onChange={(e) => setRefreshInterval(Number(e.target.value))}
                 className="bg-transparent text-zinc-200 outline-none cursor-pointer pr-1"
               >
@@ -261,7 +260,7 @@ function App() {
 
       {/* Main Layout Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-8 py-6 flex flex-col gap-6">
-        
+
         {/* Error Notification Banner */}
         {error && (
           <div className="bg-brand-rose/10 border border-brand-rose/20 text-brand-rose rounded-xl p-4 text-sm flex items-start gap-3">
@@ -278,27 +277,24 @@ function App() {
         <div className="flex border-b border-white/5 gap-6">
           <button
             onClick={() => setActiveTab('dashboard')}
-            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${
-              activeTab === 'dashboard' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-            }`}
+            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${activeTab === 'dashboard' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
           >
             <IconLayoutDashboard className="h-4 w-4" />
             Live Dashboard
           </button>
           <button
             onClick={() => setActiveTab('forecast')}
-            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${
-              activeTab === 'forecast' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-            }`}
+            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${activeTab === 'forecast' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
           >
             <IconChartLine className="h-4 w-4" />
             AI Forecasts
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${
-              activeTab === 'history' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-            }`}
+            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${activeTab === 'history' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
           >
             <IconHistory className="h-4 w-4" />
             Historical Logs
@@ -315,14 +311,14 @@ function App() {
           <>
             {activeTab === 'dashboard' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                
+
                 {/* 1. Health Score Column */}
                 <div className="lg:col-span-1 flex flex-col gap-6">
                   <div className="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden">
                     <div className="absolute top-4 left-4 bg-white/5 border border-white/5 rounded-lg px-2.5 py-1 text-[10px] font-bold tracking-wider text-zinc-400 uppercase">
                       Overview
                     </div>
-                    
+
                     <h3 className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-6 mt-4">PC Health Score</h3>
 
                     {/* Circular Score Indicator */}
@@ -356,9 +352,8 @@ function App() {
                     </div>
 
                     <div className="mt-6">
-                      <span className={`px-4 py-1.5 rounded-full text-xs font-bold ${
-                        healthScore > 75 ? 'bg-brand-emerald/10 text-brand-emerald' : healthScore > 40 ? 'bg-amber-500/10 text-amber-500' : 'bg-brand-rose/10 text-brand-rose'
-                      }`}>
+                      <span className={`px-4 py-1.5 rounded-full text-xs font-bold ${healthScore > 75 ? 'bg-brand-emerald/10 text-brand-emerald' : healthScore > 40 ? 'bg-amber-500/10 text-amber-500' : 'bg-brand-rose/10 text-brand-rose'
+                        }`}>
                         {healthScore > 75 ? 'System Optimal' : healthScore > 40 ? 'Performance Warning' : 'System Degraded'}
                       </span>
                     </div>
@@ -384,7 +379,7 @@ function App() {
                 {/* 2. Gauges & Real-time Sparklines Column */}
                 <div className="lg:col-span-2 flex flex-col gap-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    
+
                     {/* CPU Card */}
                     <div className="glass-panel rounded-2xl p-6 flex flex-col gap-4">
                       <div className="flex items-center justify-between">
@@ -401,8 +396,8 @@ function App() {
                           <AreaChart data={history}>
                             <defs>
                               <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#f97316" stopOpacity={0.2}/>
-                                <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                                <stop offset="5%" stopColor="#f97316" stopOpacity={0.2} />
+                                <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
                               </linearGradient>
                             </defs>
                             <Tooltip
@@ -431,8 +426,8 @@ function App() {
                           <AreaChart data={history}>
                             <defs>
                               <linearGradient id="colorMem" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
-                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} />
+                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                               </linearGradient>
                             </defs>
                             <Tooltip
@@ -454,9 +449,8 @@ function App() {
                         <IconCloud className="h-5 w-5 text-brand-orange" />
                         <span className="text-sm font-bold">Cloud Web Monitor (Render App)</span>
                       </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${
-                        live?.web_status === 200 ? 'bg-brand-emerald/10 text-brand-emerald' : 'bg-brand-rose/10 text-brand-rose'
-                      }`}>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${live?.web_status === 200 ? 'bg-brand-emerald/10 text-brand-emerald' : 'bg-brand-rose/10 text-brand-rose'
+                        }`}>
                         {live?.web_status === 200 ? 'Status 200 OK' : 'Offline / Interrupted'}
                       </span>
                     </div>
@@ -471,9 +465,9 @@ function App() {
                         <span className="text-2xl font-black block mt-1">{live?.web_status || 'N/A'}</span>
                       </div>
                       <div className="bg-white/5 rounded-xl p-3 border border-white/5 flex flex-col justify-center items-center">
-                        <a 
-                          href="https://real-time-system-monitor-with-ai.onrender.com" 
-                          target="_blank" 
+                        <a
+                          href="https://real-time-system-monitor-with-ai.onrender.com"
+                          target="_blank"
                           rel="noreferrer"
                           className="text-xs text-brand-orange font-semibold hover:underline flex items-center gap-1.5"
                         >
@@ -491,7 +485,7 @@ function App() {
             {/* 3. AI Forecast Tab */}
             {activeTab === 'forecast' && (
               <div className="flex flex-col gap-6">
-                
+
                 {/* Numerical Interactive Prophet Forecast */}
                 {forecast && forecast.cpu && forecast.cpu.length > 0 ? (
                   <div className="glass-panel rounded-2xl p-6">
@@ -499,7 +493,7 @@ function App() {
                       <IconChartLine className="h-5 w-5 text-brand-orange" />
                       30-Minute AI Predictive Analytics (CPU & RAM)
                     </h3>
-                    
+
                     <div className="h-80">
                       <ResponsiveContainer width="100%" height="100%">
                         <LineChart data={forecast.cpu.map((cPoint, index) => ({
@@ -536,9 +530,9 @@ function App() {
                 <div className="glass-panel rounded-2xl p-6">
                   <h3 className="text-sm font-bold tracking-tight mb-4">Prophet Forecast Matrix Blueprint</h3>
                   <div className="border border-white/5 rounded-xl overflow-hidden bg-espresso-darkest flex items-center justify-center p-4">
-                    <img 
-                      src={`${API_BASE}/api/forecast-image?salt=${imageSalt}`} 
-                      alt="Prophet Forecast Graphs" 
+                    <img
+                      src={`${API_BASE}/api/forecast-image?salt=${imageSalt}`}
+                      alt="Prophet Forecast Graphs"
                       className="max-h-[600px] w-auto object-contain rounded-lg shadow-2xl"
                     />
                   </div>
