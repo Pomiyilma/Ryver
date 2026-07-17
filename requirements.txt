@@ -1,0 +1,7 @@
+psutil>=5.9.8
+influxdb-client>=1.35.0
+python-dotenv>=1.0.1
+requests>=2.32.0
+pandas>=2.2.0
+matplotlib>=3.8.0
+prophet>=1.1.0

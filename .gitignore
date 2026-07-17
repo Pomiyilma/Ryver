@@ -29,12 +29,9 @@ forecast.png
 forecast.json
 *.csv
 
-
-# Data
+# Data files
 cloud_system_logs.csv
 system_logs.csv
-forecast.json
-forecast.png
 
 # AI / Editor Caches
 .agent/

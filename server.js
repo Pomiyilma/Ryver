@@ -3,19 +3,43 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { InfluxDB } = require('@influxdata/influxdb-client');
+const { spawn } = require('child_process');
+const cron = require('node-cron');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const isProduction = process.env.NODE_ENV === 'production';
 
-app.use(cors());
+app.use(cors({
+  origin: isProduction ? true : '*',
+  credentials: true,
+}));
 app.use(express.json());
 
-// InfluxDB Connection Setup
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
 const url = process.env.INFLUXDB_URL || 'http://localhost:8086';
 const token = process.env.INFLUXDB_TOKEN;
 const org = process.env.INFLUXDB_ORG || 'my-org';
 const bucket = process.env.INFLUXDB_BUCKET || 'system_metrics';
+
+// Environment variable validation
+const requiredEnvVars = [];
+if (!process.env.INFLUXDB_URL) requiredEnvVars.push('INFLUXDB_URL');
+if (!process.env.INFLUXDB_TOKEN) requiredEnvVars.push('INFLUXDB_TOKEN');
+if (!process.env.INFLUXDB_ORG) requiredEnvVars.push('INFLUXDB_ORG');
+if (!process.env.INFLUXDB_BUCKET) requiredEnvVars.push('INFLUXDB_BUCKET');
+if (!process.env.PORT) requiredEnvVars.push('PORT');
+
+if (requiredEnvVars.length > 0 && process.env.NODE_ENV === 'production') {
+  console.error(`[Server] ERROR: Missing required environment variables: ${requiredEnvVars.join(', ')}`);
+  console.error('[Server] Please set these variables and restart the server.');
+  process.exit(1);
+}
 
 let influxClient = null;
 let queryApi = null;
@@ -24,20 +48,79 @@ if (token) {
   try {
     influxClient = new InfluxDB({ url, token });
     queryApi = influxClient.getQueryApi(org);
-    console.log(`[InfluxDB] Client initialized pointing to ${url}`);
+    console.log(`[InfluxDB] Client initialized for ${url}`);
   } catch (err) {
     console.error('[InfluxDB] Initialization error:', err.message);
   }
 } else {
-  console.warn('[InfluxDB] No INFLUXDB_TOKEN found in environment. Running in Simulated Mode by default.');
+  console.warn('[InfluxDB] No token found; running with graceful preview data.');
 }
 
-// Helper: Run Flux queries wrapped in Promise
+// Prediction generation state
+let lastPredictionTime = null;
+let lastPredictionError = null;
+let isGeneratingPrediction = false;
+
+function generatePrediction() {
+  if (isGeneratingPrediction) {
+    console.log('[Prediction] Already running, skipping this cycle');
+    return;
+  }
+
+  isGeneratingPrediction = true;
+  lastPredictionError = null;
+  console.log('[Prediction] Starting prediction generation...');
+
+  const pythonProcess = spawn('python', ['predict_metrics.py'], {
+    cwd: __dirname,
+    stdio: 'pipe'
+  });
+
+  pythonProcess.stdout.on('data', (data) => {
+    console.log(`[Prediction] ${data.toString().trim()}`);
+  });
+
+  pythonProcess.stderr.on('data', (data) => {
+    console.error(`[Prediction] Error: ${data.toString().trim()}`);
+    lastPredictionError = data.toString().trim();
+  });
+
+  pythonProcess.on('close', (code) => {
+    isGeneratingPrediction = false;
+    if (code === 0) {
+      lastPredictionTime = new Date().toISOString();
+      console.log(`[Prediction] Completed successfully at ${lastPredictionTime}`);
+    } else {
+      console.error(`[Prediction] Failed with exit code ${code}`);
+      lastPredictionError = lastPredictionError || `Process exited with code ${code}`;
+    }
+  });
+
+  pythonProcess.on('error', (err) => {
+    isGeneratingPrediction = false;
+    console.error('[Prediction] Failed to spawn process:', err);
+    lastPredictionError = err.message;
+  });
+}
+
+// Schedule prediction generation every 10 minutes
+cron.schedule('*/10 * * * *', () => {
+  console.log('[Prediction] Running scheduled prediction generation');
+  generatePrediction();
+});
+
+// Generate initial prediction on startup (with a slight delay to let server start)
+setTimeout(() => {
+  console.log('[Prediction] Running initial prediction generation');
+  generatePrediction();
+}, 5000);
+
 function runFluxQuery(fluxQuery) {
   return new Promise((resolve, reject) => {
     if (!queryApi) {
       return reject(new Error('InfluxDB client not configured'));
     }
+
     const rows = [];
     queryApi.queryRows(fluxQuery, {
       next(row, tableMeta) {
@@ -48,35 +131,34 @@ function runFluxQuery(fluxQuery) {
       },
       complete() {
         resolve(rows);
-      }
+      },
     });
   });
 }
 
-// Mock Generators (Graceful fallbacks)
 function getMockLive() {
   const now = new Date().toISOString();
   return {
     timestamp: now,
-    cpu: +(15 + Math.random() * 20).toFixed(2),
-    memory: +(62 + Math.random() * 3).toFixed(2),
+    cpu: +(18 + Math.random() * 12).toFixed(2),
+    memory: +(60 + Math.random() * 6).toFixed(2),
     web_status: Math.random() > 0.02 ? 200 : 504,
-    response_time_ms: +(120 + Math.random() * 90).toFixed(2),
-    isSimulated: true
+    response_time_ms: +(140 + Math.random() * 90).toFixed(2),
+    isSimulated: true,
   };
 }
 
 function getMockHistory() {
   const history = [];
   const now = Date.now();
-  for (let i = 59; i >= 0; i--) {
+  for (let i = 59; i >= 0; i -= 1) {
     const time = new Date(now - i * 60000).toISOString();
     const cycle = i / 10;
     history.push({
       time,
       cpu: +(18 + Math.sin(cycle) * 8 + Math.random() * 4).toFixed(2),
       memory: +(60 + Math.cos(cycle) * 2 + Math.random() * 1).toFixed(2),
-      response_time_ms: +(110 + Math.random() * 60).toFixed(2)
+      response_time_ms: +(110 + Math.random() * 70).toFixed(2),
     });
   }
   return history;
@@ -88,30 +170,30 @@ function getMockForecast() {
     cpu: [],
     memory: [],
     web: [],
-    isSimulated: true
+    isSimulated: true,
   };
   const now = Date.now();
-  for (let i = 1; i <= 30; i++) {
+  for (let i = 1; i <= 30; i += 1) {
     const time = new Date(now + i * 60000).toISOString();
-    const cpuTrend = 25 + (i * 0.4);
-    const memTrend = 63 + (i * 0.2);
+    const cpuTrend = 24 + i * 0.35;
+    const memTrend = 62 + i * 0.2;
     forecast.cpu.push({
       ds: time,
       yhat: +(cpuTrend + Math.sin(i / 2) * 6).toFixed(2),
       yhat_lower: +(cpuTrend - 8).toFixed(2),
-      yhat_upper: +(cpuTrend + 8).toFixed(2)
+      yhat_upper: +(cpuTrend + 8).toFixed(2),
     });
     forecast.memory.push({
       ds: time,
       yhat: +(memTrend + Math.cos(i / 3) * 1.5).toFixed(2),
       yhat_lower: +(memTrend - 4).toFixed(2),
-      yhat_upper: +(memTrend + 4).toFixed(2)
+      yhat_upper: +(memTrend + 4).toFixed(2),
     });
     forecast.web.push({
       ds: time,
       yhat: +(140 + Math.random() * 30).toFixed(2),
       yhat_lower: 100,
-      yhat_upper: 220
+      yhat_upper: 220,
     });
   }
   return forecast;
@@ -220,13 +302,18 @@ app.get('/api/metrics/forecast', (req, res) => {
     try {
       const data = fs.readFileSync(forecastPath, 'utf8');
       const parsed = JSON.parse(data);
-      res.json({ ...parsed, isSimulated: false });
+      res.json({ 
+        ...parsed, 
+        isSimulated: false,
+        forecastGeneratedAt: lastPredictionTime,
+        forecastAge: lastPredictionTime ? Math.floor((Date.now() - new Date(lastPredictionTime).getTime()) / 1000) : null
+      });
     } catch (err) {
       console.error('[Backend] Error reading forecast.json:', err.message);
-      res.json(getMockForecast());
+      res.json({ ...getMockForecast(), forecastGeneratedAt: lastPredictionTime, forecastAge: null });
     }
   } else {
-    res.json(getMockForecast());
+    res.json({ ...getMockForecast(), forecastGeneratedAt: lastPredictionTime, forecastAge: null });
   }
 });
 
@@ -253,13 +340,42 @@ app.get('/api/forecast-image', (req, res) => {
   }
 });
 
-// --- STATIC REACT SERVING ---
-app.use(express.static(path.join(__dirname, 'frontend', 'build')));
+const buildPath = path.join(__dirname, 'frontend', 'build');
+if (fs.existsSync(buildPath)) {
+  app.use(express.static(buildPath));
+  console.log('[Server] Serving React build from:', buildPath);
+} else {
+  console.warn('[Server] React build not found. Run "npm run build" first.');
+}
+
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'ryver', 
+    environment: isProduction ? 'production' : 'development',
+    influxdb: queryApi ? 'connected' : 'disconnected',
+    prediction: {
+      lastGeneratedAt: lastPredictionTime,
+      lastError: lastPredictionError,
+      isGenerating: isGeneratingPrediction,
+      status: isGeneratingPrediction ? 'generating' : lastPredictionError ? 'error' : lastPredictionTime ? 'success' : 'pending'
+    }
+  });
+});
 
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'frontend', 'build', 'index.html'));
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
+
+  if (fs.existsSync(buildPath)) {
+    res.sendFile(path.join(buildPath, 'index.html'));
+  } else {
+    res.status(404).send('React build not found. Please run "npm run build"');
+  }
 });
 
 app.listen(PORT, () => {
-  console.log(`[Server] Web service running on port ${PORT}`);
+  console.log(`[Server] Ryver backend running on port ${PORT}`);
+  console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
 });

@@ -1,32 +1,37 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  IconCpu,
-  IconDatabase,
   IconActivity,
   IconAlertCircle,
-  IconCheck,
-  IconRefresh,
   IconChartLine,
+  IconCheck,
   IconClock,
+  IconCloud,
+  IconCpu,
+  IconDatabase,
+  IconExternalLink,
   IconHistory,
   IconLayoutDashboard,
-  IconCloud,
-  IconExternalLink
+  IconRefresh,
+  IconTrendingUp,
 } from '@tabler/icons-react';
 import {
-  AreaChart,
   Area,
+  AreaChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  CartesianGrid
 } from 'recharts';
 import confetti from 'canvas-confetti';
 
-const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
+const API_BASE = process.env.REACT_APP_API_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001');
+
+type TabValue = 'dashboard' | 'forecast' | 'history';
+
+type RecommendationType = 'critical' | 'warning' | 'success' | 'info';
 
 interface LiveData {
   timestamp: string;
@@ -59,15 +64,26 @@ interface ForecastData {
   isSimulated: boolean;
 }
 
+interface Recommendation {
+  type: RecommendationType;
+  title: string;
+  message: string;
+  confidence: number;
+  actionable: boolean;
+  timeToImpact: string;
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
 function App() {
   const [live, setLive] = useState<LiveData | null>(null);
   const [history, setHistory] = useState<HistoryData[]>([]);
   const [forecast, setForecast] = useState<ForecastData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [refreshInterval, setRefreshInterval] = useState(30); // seconds
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'forecast' | 'history'>('dashboard');
-  const [imageSalt, setImageSalt] = useState(0); // For forcing forecast image reload
+  const [refreshInterval, setRefreshInterval] = useState(30);
+  const [activeTab, setActiveTab] = useState<TabValue>('dashboard');
+  const [imageSalt, setImageSalt] = useState(0);
 
   const fetchData = useCallback(async () => {
     try {
@@ -76,11 +92,11 @@ function App() {
       const [liveRes, histRes, foreRes] = await Promise.all([
         fetch(`${API_BASE}/api/metrics/live`),
         fetch(`${API_BASE}/api/metrics/history`),
-        fetch(`${API_BASE}/api/metrics/forecast`)
+        fetch(`${API_BASE}/api/metrics/forecast`),
       ]);
 
       if (!liveRes.ok || !histRes.ok || !foreRes.ok) {
-        throw new Error('Server returned an error status code');
+        throw new Error('The backend returned an unexpected response.');
       }
 
       const liveJson: LiveData = await liveRes.json();
@@ -90,10 +106,10 @@ function App() {
       setLive(liveJson);
       setHistory(histJson);
       setForecast(foreJson);
-      setImageSalt(prev => prev + 1);
-    } catch (err: any) {
+      setImageSalt((prev) => prev + 1);
+    } catch (err: unknown) {
       console.error('Fetch Error:', err);
-      setError('Could not connect to the backend server. Verify the server is running on port 3001.');
+      setError('Realtime telemetry is currently unavailable. Ryver is falling back to a graceful preview experience.');
     } finally {
       setLoading(false);
     }
@@ -105,141 +121,214 @@ function App() {
 
   useEffect(() => {
     if (refreshInterval <= 0) return;
-    const interval = setInterval(() => {
+    const interval = window.setInterval(() => {
       fetchData();
     }, refreshInterval * 1000);
-    return () => clearInterval(interval);
-  }, [refreshInterval, fetchData]);
+    return () => window.clearInterval(interval);
+  }, [fetchData, refreshInterval]);
 
-  // Calculate Health Score
-  const calculateHealthScore = useCallback(() => {
+  const healthScore = useMemo(() => {
     if (!live) return 100;
+
     let score = 100;
 
-    // Deduct for CPU
-    if (live.cpu > 80) score -= 25;
-    else if (live.cpu > 50) score -= 10;
+    if (live.cpu > 82) score -= 24;
+    else if (live.cpu > 62) score -= 10;
 
-    // Deduct for Memory
-    if (live.memory > 85) score -= 30;
-    else if (live.memory > 70) score -= 15;
+    if (live.memory > 88) score -= 27;
+    else if (live.memory > 72) score -= 12;
 
-    // Deduct for Web Monitor
-    if (live.web_status !== 200) score -= 20;
-    if (live.response_time_ms > 1000) score -= 10;
+    if (live.web_status !== 200) score -= 18;
+    if (live.response_time_ms > 1400) score -= 8;
 
-    return Math.max(0, score);
+    return clamp(score, 0, 100);
   }, [live]);
 
-  const healthScore = calculateHealthScore();
-
-  // Trigger celebration on perfect health score load
   useEffect(() => {
     if (!loading && healthScore === 100) {
       confetti({
         particleCount: 50,
         spread: 60,
-        origin: { y: 0.85 },
-        colors: ['#f97316', '#10b981', '#3b82f6']
+        origin: { y: 0.9 },
+        colors: ['#f97316', '#10b981', '#3b82f6'],
       });
     }
   }, [healthScore, loading]);
 
-  // Generate Recommendations based on live and forecast data
-  const getAIRecommendations = () => {
-    const list = [];
-    if (!live) return ['Analyzing system state...'];
-
-    // CPU warnings
-    if (live.cpu > 80) {
-      list.push('Critical CPU usage detected. Close demanding tasks immediately.');
-    } else if (live.cpu > 50) {
-      list.push('Elevated CPU load. Your processor is actively handling tasks.');
+  const recommendations = useMemo<Recommendation[]>(() => {
+    if (!live) {
+      return [
+        {
+          type: 'info',
+          title: 'Preparing your insight stream',
+          message: 'Ryver is gathering live telemetry so it can turn your system data into clear, useful guidance.',
+          confidence: 100,
+          actionable: false,
+          timeToImpact: 'Now',
+        },
+      ];
     }
 
-    // Memory warnings
-    if (live.memory > 85) {
-      list.push('RAM usage is near capacity. Close idle browser tabs or heavy apps.');
-    } else if (live.memory > 70) {
-      list.push('Warning: RAM usage is trending up - expect high memory pressure soon.');
+    const recs: Recommendation[] = [];
+    const cpu = live.cpu ?? 0;
+    const memory = live.memory ?? 0;
+    const latency = live.response_time_ms ?? 0;
+    const status = live.web_status ?? 0;
+
+    if (cpu > 87) {
+      recs.push({
+        type: 'critical',
+        title: 'CPU is spiking hard',
+        message: 'Your processor is under sustained pressure. Close heavy apps or browser tabs now to reduce lag and keep the system responsive.',
+        confidence: 96,
+        actionable: true,
+        timeToImpact: 'Immediate',
+      });
+    } else if (cpu > 68) {
+      recs.push({
+        type: 'warning',
+        title: 'CPU load is climbing',
+        message: 'Your machine is working harder than usual. A short cleanup or lighter workload will keep performance crisp.',
+        confidence: 84,
+        actionable: true,
+        timeToImpact: '15–30 min',
+      });
     }
 
-    // Web speed warnings
-    if (live.web_status !== 200) {
-      list.push('Alert: The monitored cloud app is unreachable (Status ' + live.web_status + ').');
-    } else if (live.response_time_ms > 1500) {
-      list.push('Response latency is high. Cloud app may be experiencing delays.');
+    if (memory > 90) {
+      recs.push({
+        type: 'critical',
+        title: 'RAM is approaching a wall',
+        message: 'Memory is almost exhausted. Close idle apps and browser tabs immediately to avoid freezes or stalled work.',
+        confidence: 98,
+        actionable: true,
+        timeToImpact: '5–10 min',
+      });
+    } else if (memory > 76) {
+      recs.push({
+        type: 'warning',
+        title: 'Memory pressure is building',
+        message: 'Your RAM is trending upward and could start slowing tasks soon. This is the right moment to trim background activity.',
+        confidence: 82,
+        actionable: true,
+        timeToImpact: '20–40 min',
+      });
     }
 
-    // Forecast trends
-    if (forecast && forecast.cpu && forecast.cpu.length > 0) {
-      const futureCpu = forecast.cpu[forecast.cpu.length - 1].yhat;
-      if (futureCpu > 75) {
-        list.push('Prophet predicts high processor load within the next 30 minutes.');
+    if (status !== 200) {
+      recs.push({
+        type: 'warning',
+        title: 'The monitored service is unstable',
+        message: `The monitored cloud endpoint is returning ${status}. That often means an outage, a wake-up delay, or routing trouble is affecting your experience.`,
+        confidence: 92,
+        actionable: false,
+        timeToImpact: 'Unknown',
+      });
+    } else if (latency > 1800) {
+      recs.push({
+        type: 'warning',
+        title: 'Cloud response is lagging',
+        message: 'The monitored app is responding slower than typical. If you are depending on it for work, it is worth monitoring for a few minutes.',
+        confidence: 77,
+        actionable: false,
+        timeToImpact: 'Ongoing',
+      });
+    }
+
+    if (forecast && forecast.cpu?.length && forecast.memory?.length) {
+      const futureCpu = forecast.cpu[forecast.cpu.length - 1]?.yhat ?? 0;
+      const futureMem = forecast.memory[forecast.memory.length - 1]?.yhat ?? 0;
+      const cpuTrend = futureCpu - (forecast.cpu[0]?.yhat ?? futureCpu);
+      const memTrend = futureMem - (forecast.memory[0]?.yhat ?? futureMem);
+
+      if (futureCpu > 75 && cpuTrend > 10) {
+        const estimate = Math.max(20, Math.round((75 - cpu) / Math.max(cpuTrend / 30, 0.25)));
+        recs.push({
+          type: 'warning',
+          title: 'AI forecast: CPU will rise soon',
+          message: `Ryver expects CPU load to climb into a risky zone in roughly ${estimate} minutes unless you reduce the workload.`,
+          confidence: 79,
+          actionable: true,
+          timeToImpact: `~${estimate} min`,
+        });
+      }
+
+      if (futureMem > 82 && memTrend > 4) {
+        const estimate = Math.max(20, Math.round((82 - memory) / Math.max(memTrend / 30, 0.25)));
+        recs.push({
+          type: 'warning',
+          title: 'AI forecast: memory pressure is approaching',
+          message: `Ryver projects memory usage to become uncomfortable in about ${estimate} minutes. Clearing a few tabs now will make the next hour smoother.`,
+          confidence: 74,
+          actionable: true,
+          timeToImpact: `~${estimate} min`,
+        });
       }
     }
 
-    if (list.length === 0) {
-      list.push('Your PC is healthy right now. Keep up the good work!');
+    if (recs.length === 0) {
+      recs.push({
+        type: 'success',
+        title: 'Everything looks healthy',
+        message: 'Your patterns are stable and there is no immediate action to take. Ryver is ready if anything turns.',
+        confidence: 92,
+        actionable: false,
+        timeToImpact: 'N/A',
+      });
     }
 
-    return list;
-  };
+    return recs.slice(0, 3);
+  }, [forecast, live]);
 
-  const recommendations = getAIRecommendations();
+  const primaryRecommendation = recommendations[0] ?? null;
 
-  // Helper formatting dates
-  const formatTime = (isoString: string) => {
+  const formatTime = (value: string) => {
     try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch {
-      return isoString;
+      return value;
     }
   };
 
   return (
-    <div className="min-h-[100dvh] bg-espresso-darkest text-zinc-100 flex flex-col">
-      {/* Navigation Header */}
-      <header className="border-b border-white/5 bg-espresso-deep/80 backdrop-blur-md sticky top-0 z-50 px-4 md:px-8 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(249,115,22,0.10),_transparent_30%),linear-gradient(135deg,_#050607_0%,_#0b0d10_100%)] text-zinc-100">
+      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#07090c]/80 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-8">
           <div className="flex items-center gap-3">
-            <div className="bg-brand-orange/10 p-2 rounded-lg border border-brand-orange/20">
-              <IconActivity className="h-6 width-6 text-brand-orange" />
+            <div className="rounded-2xl border border-brand-orange/30 bg-brand-orange/10 p-2.5">
+              <IconActivity className="h-6 w-6 text-brand-orange" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight">Sentinel AI</h1>
-              <p className="text-xs text-zinc-400">Real-Time System Monitor & Predictor</p>
+              <h1 className="text-lg font-semibold tracking-tight text-white">Ryver</h1>
+              <p className="text-xs text-zinc-400">Real-time system monitoring and AI forecasting</p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            {live?.isSimulated && (
-              <span className="bg-amber-500/10 text-amber-500 border border-amber-500/20 text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {live?.isSimulated ? (
+              <span className="flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-400">
                 <IconAlertCircle className="h-3.5 w-3.5" />
-                Simulated Mode
+                Preview Mode
               </span>
-            )}
-
-            {!live?.isSimulated && live && (
-              <span className="bg-brand-emerald/10 text-brand-emerald border border-brand-emerald/20 text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5">
+            ) : (
+              <span className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
                 <IconCheck className="h-3.5 w-3.5" />
-                InfluxDB Connected
+                LiveTelemetry
               </span>
             )}
 
-            <div className="flex items-center gap-2 bg-espresso-light/40 border border-white/5 rounded-lg px-2.5 py-1 text-xs">
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-zinc-300">
               <IconClock className="h-3.5 w-3.5 text-zinc-400" />
               <select
                 value={refreshInterval}
-                onChange={(e) => setRefreshInterval(Number(e.target.value))}
-                className="bg-transparent text-zinc-200 outline-none cursor-pointer pr-1"
+                onChange={(event) => setRefreshInterval(Number(event.target.value))}
+                className="bg-transparent pr-1 outline-none"
               >
-                <option value={5} className="bg-espresso-deep">5s</option>
-                <option value={15} className="bg-espresso-deep">15s</option>
-                <option value={30} className="bg-espresso-deep">30s</option>
-                <option value={60} className="bg-espresso-deep">60s</option>
-                <option value={0} className="bg-espresso-deep">Paused</option>
+                <option value={5} className="bg-[#090b0f]">5s</option>
+                <option value={15} className="bg-[#090b0f]">15s</option>
+                <option value={30} className="bg-[#090b0f]">30s</option>
+                <option value={60} className="bg-[#090b0f]">60s</option>
+                <option value={0} className="bg-[#090b0f]">Paused</option>
               </select>
             </div>
 
@@ -249,7 +338,7 @@ function App() {
                 fetchData();
               }}
               disabled={loading}
-              className="bg-brand-orange hover:bg-brand-orange/90 text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              className="flex items-center gap-2 rounded-full bg-brand-orange px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-orange/90 disabled:opacity-70"
             >
               <IconRefresh className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
               Sync
@@ -258,318 +347,310 @@ function App() {
         </div>
       </header>
 
-      {/* Main Layout Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-8 py-6 flex flex-col gap-6">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 md:px-8 md:py-8">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.35em] text-brand-orange/80">Ryver • real-time monitoring</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              Live system health and forecast clarity.
+            </h2>
+          </div>
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-300">
+            Last update {live?.timestamp ? new Date(live.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+          </div>
+        </div>
 
-        {/* Error Notification Banner */}
         {error && (
-          <div className="bg-brand-rose/10 border border-brand-rose/20 text-brand-rose rounded-xl p-4 text-sm flex items-start gap-3">
-            <IconAlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold">Backend Unreachable</p>
-              <p className="text-xs text-zinc-300 mt-1">{error}</p>
-              <p className="text-xs text-zinc-400 mt-2 font-medium">Dashboard is running in Simulated Mode automatically so you can preview the UI features.</p>
+          <div className="rounded-2xl border border-white/10 bg-brand-rose/10 px-4 py-3 text-sm text-brand-rose">
+            <div className="flex items-start gap-3">
+              <IconAlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+              <div>
+                <p className="font-semibold">Graceful preview mode is active</p>
+                <p className="mt-1 text-xs text-zinc-300">{error}</p>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-white/5 gap-6">
+        <section className="grid gap-6 xl:grid-cols-[1.1fr_0.95fr_0.95fr]">
+          <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.55)]">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.35em] text-zinc-400">PC health score</p>
+                <h3 className="mt-3 text-2xl font-semibold text-white">Performance posture</h3>
+              </div>
+              <div className="rounded-full bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.25em] text-zinc-300">Score</div>
+            </div>
+
+            <div className="mt-8 flex items-center justify-center">
+              <div className="relative h-44 w-44">
+                <svg className="absolute inset-0" viewBox="0 0 100 100">
+                  <circle cx="50" cy="50" r="42" stroke="rgba(255,255,255,0.08)" strokeWidth="8" fill="transparent" />
+                  <circle
+                    cx="50"
+                    cy="50"
+                    r="42"
+                    stroke={healthScore > 75 ? '#10b981' : healthScore > 40 ? '#f59e0b' : '#ef4444'}
+                    strokeWidth="8"
+                    fill="transparent"
+                    strokeDasharray={2 * Math.PI * 42}
+                    strokeDashoffset={2 * Math.PI * 42 * (1 - healthScore / 100)}
+                    strokeLinecap="round"
+                    className="transition-all duration-1000 ease-out"
+                  />
+                </svg>
+                <div className="relative flex h-full w-full items-center justify-center">
+                  <div className="text-center">
+                    <p className="text-5xl font-semibold text-white">{healthScore}</p>
+                    <p className="text-xs text-zinc-400 uppercase tracking-[0.25em] mt-1">/100</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center text-sm text-zinc-300">
+              {healthScore > 75
+                ? 'System optimal — expect stable performance for the next hour.'
+                : healthScore > 40
+                  ? 'Performance warning — review apps and memory usage soon.'
+                  : 'System degraded — take action to avoid slowdowns or freezes.'}
+            </div>
+          </div>
+
+          <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.55)]">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <IconCpu className="h-5 w-5 text-brand-orange" />
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.35em] text-zinc-400">CPU usage</p>
+                  <p className="text-2xl font-semibold text-white">{live?.cpu || 0}%</p>
+                </div>
+              </div>
+              <span className="rounded-full bg-brand-orange/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-brand-orange">Live</span>
+            </div>
+            <div className="mt-6 h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="cardCpuGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTime(String(value))} />
+                  <Area type="monotone" dataKey="cpu" stroke="#f97316" strokeWidth={2.5} fill="url(#cardCpuGradient)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.55)]">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <IconDatabase className="h-5 w-5 text-brand-blue" />
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.35em] text-zinc-400">RAM usage</p>
+                  <p className="text-2xl font-semibold text-white">{live?.memory || 0}%</p>
+                </div>
+              </div>
+              <span className="rounded-full bg-brand-blue/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] text-brand-blue">Live</span>
+            </div>
+            <div className="mt-6 h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="cardMemGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTime(String(value))} />
+                  <Area type="monotone" dataKey="memory" stroke="#3b82f6" strokeWidth={2.5} fill="url(#cardMemGradient)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.55)]">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.35em] text-brand-orange/80">Actionable warnings</p>
+              <h3 className="mt-3 text-2xl font-semibold text-white">Smart, prioritized next steps</h3>
+            </div>
+            <div className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-300">
+              Confidence {primaryRecommendation?.confidence ?? 0}% • Impact {primaryRecommendation?.timeToImpact ?? 'Now'}
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-4 md:grid-cols-3">
+            {recommendations.map((rec, idx) => (
+              <div key={idx} className={`rounded-2xl border p-5 ${rec.type === 'critical' ? 'border-brand-rose/30 bg-brand-rose/10' : rec.type === 'warning' ? 'border-amber-500/30 bg-amber-500/10' : rec.type === 'success' ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-brand-blue/30 bg-brand-blue/10'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    {rec.type === 'critical' && <IconAlertCircle className="h-5 w-5 text-brand-rose" />}
+                    {rec.type === 'warning' && <IconAlertCircle className="h-5 w-5 text-amber-500" />}
+                    {rec.type === 'success' && <IconCheck className="h-5 w-5 text-brand-emerald" />}
+                    {rec.type === 'info' && <IconActivity className="h-5 w-5 text-brand-blue" />}
+                    <h4 className="text-sm font-semibold text-white">{rec.title}</h4>
+                  </div>
+                  {rec.actionable && <span className="rounded-full bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-brand-orange">Action</span>}
+                </div>
+                <p className="mt-4 text-sm leading-6 text-zinc-300">{rec.message}</p>
+                <div className="mt-4 flex items-center justify-between text-xs text-zinc-400">
+                  <span>Confidence {rec.confidence}%</span>
+                  <span>{rec.timeToImpact}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <div className="flex border-b border-white/10 gap-4 overflow-x-auto pb-2">
           <button
             onClick={() => setActiveTab('dashboard')}
-            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${activeTab === 'dashboard' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-              }`}
+            className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${activeTab === 'dashboard' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
           >
             <IconLayoutDashboard className="h-4 w-4" />
-            Live Dashboard
+            Live dashboard
           </button>
           <button
             onClick={() => setActiveTab('forecast')}
-            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${activeTab === 'forecast' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-              }`}
+            className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${activeTab === 'forecast' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
           >
             <IconChartLine className="h-4 w-4" />
-            AI Forecasts
+            AI forecasts
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`pb-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition-all ${activeTab === 'history' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'
-              }`}
+            className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${activeTab === 'history' ? 'border-brand-orange text-brand-orange' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}
           >
             <IconHistory className="h-4 w-4" />
-            Historical Logs
+            Historical logs
           </button>
         </div>
 
-        {/* Tab Contents */}
         {loading && !live ? (
-          <div className="flex-1 flex flex-col items-center justify-center py-20 gap-4">
-            <div className="h-10 w-10 border-4 border-brand-orange/30 border-t-brand-orange rounded-full animate-spin"></div>
-            <p className="text-sm text-zinc-400 font-medium">Connecting to metrics database...</p>
+          <div className="flex flex-col items-center justify-center gap-4 py-20">
+            <div className="h-10 w-10 animate-spin rounded-full border-4 border-brand-orange/30 border-t-brand-orange" />
+            <p className="text-sm font-medium text-zinc-400">Connecting to your telemetry stream...</p>
           </div>
         ) : (
           <>
             {activeTab === 'dashboard' && (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-                {/* 1. Health Score Column */}
-                <div className="lg:col-span-1 flex flex-col gap-6">
-                  <div className="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden">
-                    <div className="absolute top-4 left-4 bg-white/5 border border-white/5 rounded-lg px-2.5 py-1 text-[10px] font-bold tracking-wider text-zinc-400 uppercase">
-                      Overview
-                    </div>
-
-                    <h3 className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-6 mt-4">PC Health Score</h3>
-
-                    {/* Circular Score Indicator */}
-                    <div className="relative h-44 w-44 flex items-center justify-center">
-                      <svg className="absolute inset-0 transform -rotate-90" viewBox="0 0 100 100">
-                        <circle
-                          cx="50"
-                          cy="50"
-                          r="42"
-                          stroke="rgba(255,255,255,0.03)"
-                          strokeWidth="8"
-                          fill="transparent"
-                        />
-                        <circle
-                          cx="50"
-                          cy="50"
-                          r="42"
-                          stroke={healthScore > 75 ? '#10b981' : healthScore > 40 ? '#f59e0b' : '#ef4444'}
-                          strokeWidth="8"
-                          fill="transparent"
-                          strokeDasharray={2 * Math.PI * 42}
-                          strokeDashoffset={2 * Math.PI * 42 * (1 - healthScore / 100)}
-                          strokeLinecap="round"
-                          className="transition-all duration-1000 ease-out"
-                        />
-                      </svg>
-                      <div className="text-center">
-                        <span className="text-5xl font-black tracking-tight">{healthScore}</span>
-                        <span className="text-zinc-500 text-xs block font-bold mt-1">/ 100</span>
-                      </div>
-                    </div>
-
-                    <div className="mt-6">
-                      <span className={`px-4 py-1.5 rounded-full text-xs font-bold ${healthScore > 75 ? 'bg-brand-emerald/10 text-brand-emerald' : healthScore > 40 ? 'bg-amber-500/10 text-amber-500' : 'bg-brand-rose/10 text-brand-rose'
-                        }`}>
-                        {healthScore > 75 ? 'System Optimal' : healthScore > 40 ? 'Performance Warning' : 'System Degraded'}
-                      </span>
-                    </div>
+              <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6">
+                <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                  <div className="flex items-center gap-2">
+                    <IconCloud className="h-5 w-5 text-brand-orange" />
+                    <span className="text-sm font-semibold text-white">Cloud status</span>
                   </div>
+                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${live?.web_status === 200 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-brand-rose/10 text-brand-rose'}`}>
+                    {live?.web_status === 200 ? 'Status 200 OK' : 'Offline or delayed'}
+                  </span>
+                </div>
 
-                  {/* Recommendation Box */}
-                  <div className="glass-panel rounded-2xl p-6 flex-1">
-                    <h3 className="text-sm font-bold tracking-tight mb-4 flex items-center gap-2">
-                      <IconActivity className="h-4 w-4 text-brand-orange" />
-                      Actionable Warnings
-                    </h3>
-                    <ul className="flex flex-col gap-3">
-                      {recommendations.map((rec, idx) => (
-                        <li key={idx} className="flex gap-2.5 text-xs text-zinc-300 leading-relaxed bg-white/5 border border-white/5 rounded-xl p-3">
-                          <IconAlertCircle className="h-4 w-4 shrink-0 text-brand-orange mt-0.5" />
-                          <span>{rec}</span>
-                        </li>
-                      ))}
-                    </ul>
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.25em] text-zinc-500">Latency</p>
+                    <p className="mt-2 text-2xl font-semibold text-white">{live?.response_time_ms || 0} ms</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.25em] text-zinc-500">HTTP</p>
+                    <p className="mt-2 text-2xl font-semibold text-white">{live?.web_status || 'N/A'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <a href="https://real-time-system-monitor-with-ai.onrender.com" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1 text-sm font-semibold text-brand-orange hover:underline">
+                      Open app
+                      <IconExternalLink className="h-3.5 w-3.5" />
+                    </a>
                   </div>
                 </div>
 
-                {/* 2. Gauges & Real-time Sparklines Column */}
-                <div className="lg:col-span-2 flex flex-col gap-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-                    {/* CPU Card */}
-                    <div className="glass-panel rounded-2xl p-6 flex flex-col gap-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <IconCpu className="h-4 w-4 text-brand-orange" />
-                          <span className="text-sm font-bold">CPU Usage</span>
-                        </div>
-                        <span className="text-2xl font-black tracking-tight">{live?.cpu || 0}%</span>
-                      </div>
-
-                      {/* CPU Sparkline */}
-                      <div className="h-28">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={history}>
-                            <defs>
-                              <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#f97316" stopOpacity={0.2} />
-                                <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
-                              </linearGradient>
-                            </defs>
-                            <Tooltip
-                              contentStyle={{ background: '#1a1714', border: '1px solid rgba(255,255,255,0.08)' }}
-                              labelFormatter={(t) => formatTime(t)}
-                            />
-                            <Area type="monotone" dataKey="cpu" stroke="#f97316" strokeWidth={2} fillOpacity={1} fill="url(#colorCpu)" />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-
-                    {/* Memory Card */}
-                    <div className="glass-panel rounded-2xl p-6 flex flex-col gap-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <IconDatabase className="h-4 w-4 text-brand-blue" />
-                          <span className="text-sm font-bold">RAM Usage</span>
-                        </div>
-                        <span className="text-2xl font-black tracking-tight">{live?.memory || 0}%</span>
-                      </div>
-
-                      {/* Memory Sparkline */}
-                      <div className="h-28">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={history}>
-                            <defs>
-                              <linearGradient id="colorMem" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} />
-                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                              </linearGradient>
-                            </defs>
-                            <Tooltip
-                              contentStyle={{ background: '#1a1714', border: '1px solid rgba(255,255,255,0.08)' }}
-                              labelFormatter={(t) => formatTime(t)}
-                            />
-                            <Area type="monotone" dataKey="memory" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorMem)" />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-
+                <div className="mt-5 rounded-2xl border border-brand-orange/20 bg-brand-orange/10 p-4 text-sm text-zinc-300">
+                  <div className="flex items-center gap-2 text-white">
+                    <IconTrendingUp className="h-4 w-4 text-brand-orange" />
+                    Forecast posture
                   </div>
-
-                  {/* Cloud Monitor Status Card */}
-                  <div className="glass-panel rounded-2xl p-6 flex flex-col gap-4">
-                    <div className="flex items-center justify-between border-b border-white/5 pb-3">
-                      <div className="flex items-center gap-2">
-                        <IconCloud className="h-5 w-5 text-brand-orange" />
-                        <span className="text-sm font-bold">Cloud Web Monitor (Render App)</span>
-                      </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${live?.web_status === 200 ? 'bg-brand-emerald/10 text-brand-emerald' : 'bg-brand-rose/10 text-brand-rose'
-                        }`}>
-                        {live?.web_status === 200 ? 'Status 200 OK' : 'Offline / Interrupted'}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                        <span className="text-zinc-400 text-[10px] uppercase font-bold tracking-wider block">Response latency</span>
-                        <span className="text-2xl font-black block mt-1">{live?.response_time_ms || 0} ms</span>
-                      </div>
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                        <span className="text-zinc-400 text-[10px] uppercase font-bold tracking-wider block">Status Code</span>
-                        <span className="text-2xl font-black block mt-1">{live?.web_status || 'N/A'}</span>
-                      </div>
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5 flex flex-col justify-center items-center">
-                        <a
-                          href="https://real-time-system-monitor-with-ai.onrender.com"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-xs text-brand-orange font-semibold hover:underline flex items-center gap-1.5"
-                        >
-                          Visit App
-                          <IconExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      </div>
-                    </div>
-                  </div>
+                  <p className="mt-2 text-sm leading-6">
+                    {healthScore > 75
+                      ? 'The system trend looks healthy, with enough headroom for steady work.'
+                      : healthScore > 40
+                        ? 'Watch the next stretch carefully, especially if more apps open.'
+                        : 'The system is under pressure; a quick reset or lighter workload is recommended.'}
+                  </p>
                 </div>
-
               </div>
             )}
 
-            {/* 3. AI Forecast Tab */}
             {activeTab === 'forecast' && (
-              <div className="flex flex-col gap-6">
-
-                {/* Numerical Interactive Prophet Forecast */}
-                {forecast && forecast.cpu && forecast.cpu.length > 0 ? (
-                  <div className="glass-panel rounded-2xl p-6">
-                    <h3 className="text-sm font-bold tracking-tight mb-4 flex items-center gap-2">
+              <div className="grid gap-6">
+                {forecast && forecast.cpu?.length ? (
+                  <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
                       <IconChartLine className="h-5 w-5 text-brand-orange" />
-                      30-Minute AI Predictive Analytics (CPU & RAM)
+                      30-minute predictive outlook
                     </h3>
-
-                    <div className="h-80">
+                    <div className="mt-4 h-80">
                       <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={forecast.cpu.map((cPoint, index) => ({
-                          time: formatTime(cPoint.ds),
-                          'CPU Prediction': cPoint.yhat,
-                          'CPU Bound Upper': cPoint.yhat_upper,
-                          'CPU Bound Lower': cPoint.yhat_lower,
-                          'RAM Prediction': forecast.memory[index]?.yhat
+                        <LineChart data={forecast.cpu.map((point, index) => ({
+                          time: formatTime(point.ds),
+                          'CPU Prediction': point.yhat,
+                          'RAM Prediction': forecast.memory[index]?.yhat ?? 0,
                         }))}>
                           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                           <XAxis dataKey="time" stroke="rgba(255,255,255,0.3)" fontSize={10} />
                           <YAxis stroke="rgba(255,255,255,0.3)" fontSize={10} domain={[0, 100]} />
-                          <Tooltip contentStyle={{ background: '#1a1714', border: '1px solid rgba(255,255,255,0.08)' }} />
-                          <Line type="monotone" dataKey="CPU Prediction" stroke="#f97316" strokeWidth={3} dot={false} />
+                          <Tooltip contentStyle={{ background: '#11131b', border: '1px solid rgba(255,255,255,0.08)' }} />
+                          <Line type="monotone" dataKey="CPU Prediction" stroke="#f97316" strokeWidth={2.5} dot={false} />
                           <Line type="monotone" dataKey="RAM Prediction" stroke="#3b82f6" strokeWidth={2} dot={false} />
                         </LineChart>
                       </ResponsiveContainer>
                     </div>
-
-                    <div className="flex justify-center gap-6 mt-4 text-xs font-semibold">
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-brand-orange rounded-full"></span> Predicted CPU %</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-brand-blue rounded-full"></span> Predicted RAM %</span>
-                    </div>
                   </div>
                 ) : (
-                  <div className="glass-panel rounded-2xl p-6 text-center py-12">
-                    <IconAlertCircle className="h-8 w-8 text-amber-500 mx-auto mb-2" />
-                    <p className="text-sm font-semibold">Predictive Datasets Unpopulated</p>
-                    <p className="text-xs text-zinc-400 mt-1">Run `python predict_metrics.py` to trigger Prophet modeling forecasts.</p>
+                  <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6 text-center text-sm text-zinc-400">
+                    Forecast data is not available yet. Run the predictor locally to generate Prophet-based charts.
                   </div>
                 )}
 
-                {/* Prophet forecast.png visualization */}
-                <div className="glass-panel rounded-2xl p-6">
-                  <h3 className="text-sm font-bold tracking-tight mb-4">Prophet Forecast Matrix Blueprint</h3>
-                  <div className="border border-white/5 rounded-xl overflow-hidden bg-espresso-darkest flex items-center justify-center p-4">
-                    <img
-                      src={`${API_BASE}/api/forecast-image?salt=${imageSalt}`}
-                      alt="Prophet Forecast Graphs"
-                      className="max-h-[600px] w-auto object-contain rounded-lg shadow-2xl"
-                    />
+                <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6">
+                  <h3 className="text-sm font-semibold text-white">Prophet forecast image</h3>
+                  <div className="mt-4 flex items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <img src={`${API_BASE}/api/forecast-image?salt=${imageSalt}`} alt="Prophet forecast graphics" className="max-h-[560px] w-full max-w-4xl rounded-xl object-contain" />
                   </div>
                 </div>
               </div>
             )}
 
-            {/* 4. History Logs Tab */}
             {activeTab === 'history' && (
-              <div className="glass-panel rounded-2xl overflow-hidden">
-                <div className="p-6 border-b border-white/5">
-                  <h3 className="text-sm font-bold tracking-tight">InfluxDB Historical Data Ledger</h3>
-                  <p className="text-xs text-zinc-400 mt-1">Showing aggregation windows of system metrics collected over the past 1-2 hours.</p>
+              <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 overflow-hidden">
+                <div className="border-b border-white/10 p-6">
+                  <h3 className="text-sm font-semibold text-white">InfluxDB history</h3>
+                  <p className="mt-1 text-sm text-zinc-400">A recent view of aggregated telemetry captured from your local system and cloud endpoint.</p>
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-white/5 text-zinc-400 font-bold border-b border-white/5">
+                  <table className="w-full border-collapse text-left text-xs">
+                    <thead className="bg-white/5 text-zinc-400">
+                      <tr>
                         <th className="p-4">Timestamp</th>
-                        <th className="p-4">CPU Usage</th>
-                        <th className="p-4">Memory/RAM Usage</th>
-                        <th className="p-4">Web Latency</th>
+                        <th className="p-4">CPU</th>
+                        <th className="p-4">Memory</th>
+                        <th className="p-4">Latency</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5">
+                    <tbody className="divide-y divide-white/10">
                       {history.slice().reverse().map((item, idx) => (
-                        <tr key={idx} className="hover:bg-white/5 transition-colors">
-                          <td className="p-4 font-mono">{new Date(item.time).toLocaleString()}</td>
-                          <td className="p-4">{item.cpu !== undefined ? `${item.cpu}%` : 'N/A'}</td>
-                          <td className="p-4">{item.memory !== undefined ? `${item.memory}%` : 'N/A'}</td>
-                          <td className="p-4">{item.response_time_ms !== undefined ? `${item.response_time_ms} ms` : 'N/A'}</td>
+                        <tr key={`${item.time}-${idx}`} className="hover:bg-white/5">
+                          <td className="p-4 font-mono text-zinc-300">{new Date(item.time).toLocaleString()}</td>
+                          <td className="p-4 text-zinc-300">{item.cpu !== undefined ? `${item.cpu}%` : 'N/A'}</td>
+                          <td className="p-4 text-zinc-300">{item.memory !== undefined ? `${item.memory}%` : 'N/A'}</td>
+                          <td className="p-4 text-zinc-300">{item.response_time_ms !== undefined ? `${item.response_time_ms} ms` : 'N/A'}</td>
                         </tr>
                       ))}
                       {history.length === 0 && (
                         <tr>
-                          <td colSpan={4} className="p-8 text-center text-zinc-500 font-semibold">No historical logs found.</td>
+                          <td colSpan={4} className="p-8 text-center text-zinc-500">No history yet.</td>
                         </tr>
                       )}
                     </tbody>
@@ -581,9 +662,11 @@ function App() {
         )}
       </main>
 
-      {/* Page Footer */}
-      <footer className="border-t border-white/5 bg-espresso-deep py-6 px-4 text-center mt-auto">
-        <p className="text-xs text-zinc-500 font-medium">Sentinel AI - Distributed System Monitoring Suite</p>
+      <footer className="mt-auto border-t border-white/10 bg-[#07090c]/90 px-4 py-6 text-center">
+        <div className="mx-auto max-w-7xl px-4 md:px-8">
+          <p className="text-xs font-medium tracking-[0.25em] text-zinc-500">Ryver — intelligent system monitoring and AI prediction</p>
+          <p className="mt-3 text-xs leading-6 text-zinc-400">Ryver turns raw telemetry into clear alerts with confidence, impact timing, and practical next steps so you can act before problems arrive.</p>
+        </div>
       </footer>
     </div>
   );

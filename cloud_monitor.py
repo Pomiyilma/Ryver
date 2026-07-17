@@ -35,8 +35,8 @@ def setup_csv():
         writer = csv.writer(file)
         if not file_exists:
             writer.writerow([
-                "Timestamp", "CPU_Usage_%", "Memory_Usage_%", 
-                "Web_Status_Code", "Web_Response_Time_ms"
+                "Timestamp", "CPU_Usage_%", "Memory_Usage_%", "Disk_Usage_%",
+                "Bytes_Sent", "Bytes_Received", "Web_Status_Code", "Web_Response_Time_ms"
             ])
 
 def monitor_distributed():
@@ -56,11 +56,24 @@ def monitor_distributed():
             cpu_usage = psutil.cpu_percent(interval=1)
             memory_usage = psutil.virtual_memory().percent
             
+            # Disk Usage (root drive)
+            root_drive = os.path.abspath(os.sep)
+            disk = psutil.disk_usage(root_drive)
+            disk_usage = disk.percent
+            
+            # Network I/O
+            network = psutil.net_io_counters()
+            bytes_sent = network.bytes_sent
+            bytes_recv = network.bytes_recv
+            
             point_sys = (
                 influxdb_client.Point("system_metrics")
                 .tag("host", "local_machine")
                 .field("cpu_usage", cpu_usage)
                 .field("memory_usage", memory_usage)
+                .field("disk_usage", disk_usage)
+                .field("bytes_sent", bytes_sent)
+                .field("bytes_recv", bytes_recv)
             )
             write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=point_sys)
             
@@ -92,9 +105,11 @@ def monitor_distributed():
             # --- 3. AUDIT LOGGING ---
             with open(csv_filename, mode='a', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow([timestamp, cpu_usage, memory_usage, status_code, round(response_time_ms, 2)])
+                writer.writerow([timestamp, cpu_usage, memory_usage, disk_usage, 
+                                bytes_sent, bytes_recv, status_code, round(response_time_ms, 2)])
                 
-            print(f"[{timestamp}] CPU: {cpu_usage}% | RAM: {memory_usage}% | "
+            print(f"[{timestamp}] CPU: {cpu_usage}% | RAM: {memory_usage}% | Disk: {disk_usage}% | "
+                  f"Net Sent: {bytes_sent}B | Net Recv: {bytes_recv}B | "
                   f"Web Status: {status_code} | Ping: {response_time_ms:.2f}ms")
             
             # Sleep 59 secs (since psutil.cpu_percent takes 1s)
