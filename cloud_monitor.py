@@ -1,3 +1,20 @@
+"""
+cloud_monitor.py - Local system monitoring with cloud endpoint tracking
+
+This script is designed to run LOCALLY on your machine to:
+1. Collect local system metrics (CPU, RAM, disk, network) and send to InfluxDB
+2. Monitor a remote cloud endpoint (RENDER_APP_URL) for uptime/latency
+
+IMPORTANT: This script does NOT run on Render. It runs on your local machine
+and sends data to InfluxDB Cloud. RENDER_APP_URL should point to your deployed
+Render app (the target being monitored), not the local machine.
+
+Requirements:
+- Set INFLUXDB_URL, INFLUXDB_TOKEN, INFLUXDB_ORG, INFLUXDB_BUCKET env vars
+- Optionally set RENDER_APP_URL to monitor a remote endpoint
+- Run: python cloud_monitor.py
+"""
+
 import time
 import csv
 import sys
@@ -17,15 +34,25 @@ except ImportError:
 
 load_dotenv()
 
-INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
+INFLUXDB_URL = os.getenv("INFLUXDB_URL")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
+INFLUXDB_ORG = os.getenv("INFLUXDB_ORG")
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET")
+RENDER_APP_URL = os.getenv("RENDER_APP_URL")
+
+# Environment variable validation
+if not INFLUXDB_URL:
+    print("Error: INFLUXDB_URL environment variable is required.")
+    sys.exit(1)
 if not INFLUXDB_TOKEN:
     print("Security Alert: INFLUXDB_TOKEN is strictly required. Check your .env file.")
     sys.exit(1)
-
-INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "my-org")
-INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "system_metrics")
-RENDER_APP_URL = os.getenv("RENDER_APP_URL")
+if not INFLUXDB_ORG:
+    print("Error: INFLUXDB_ORG environment variable is required.")
+    sys.exit(1)
+if not INFLUXDB_BUCKET:
+    print("Error: INFLUXDB_BUCKET environment variable is required.")
+    sys.exit(1)
 
 csv_filename = "cloud_system_logs.csv"
 

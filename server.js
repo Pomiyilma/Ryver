@@ -22,10 +22,10 @@ app.use((req, res, next) => {
   next();
 });
 
-const url = process.env.INFLUXDB_URL || 'http://localhost:8086';
+const url = process.env.INFLUXDB_URL;
 const token = process.env.INFLUXDB_TOKEN;
-const org = process.env.INFLUXDB_ORG || 'my-org';
-const bucket = process.env.INFLUXDB_BUCKET || 'system_metrics';
+const org = process.env.INFLUXDB_ORG;
+const bucket = process.env.INFLUXDB_BUCKET;
 
 // Environment variable validation
 const requiredEnvVars = [];
@@ -59,6 +59,7 @@ if (token) {
 // Prediction generation state
 let lastPredictionTime = null;
 let lastPredictionError = null;
+let lastPredictionLog = null;
 let isGeneratingPrediction = false;
 
 function generatePrediction() {
@@ -69,6 +70,7 @@ function generatePrediction() {
 
   isGeneratingPrediction = true;
   lastPredictionError = null;
+  lastPredictionLog = null;
   console.log('[Prediction] Starting prediction generation...');
 
   const pythonProcess = spawn('python', ['predict_metrics.py'], {
@@ -76,23 +78,33 @@ function generatePrediction() {
     stdio: 'pipe'
   });
 
+  let stderrBuffer = '';
+
   pythonProcess.stdout.on('data', (data) => {
     console.log(`[Prediction] ${data.toString().trim()}`);
   });
 
   pythonProcess.stderr.on('data', (data) => {
-    console.error(`[Prediction] Error: ${data.toString().trim()}`);
-    lastPredictionError = data.toString().trim();
+    const stderrText = data.toString().trim();
+    console.error(`[Prediction] stderr: ${stderrText}`);
+    stderrBuffer += stderrText + '\n';
   });
 
   pythonProcess.on('close', (code) => {
     isGeneratingPrediction = false;
+    
+    // Store all stderr output for debugging
+    lastPredictionLog = stderrBuffer.trim();
+    
     if (code === 0) {
       lastPredictionTime = new Date().toISOString();
+      lastPredictionError = null; // Clear any previous error on success
       console.log(`[Prediction] Completed successfully at ${lastPredictionTime}`);
     } else {
       console.error(`[Prediction] Failed with exit code ${code}`);
-      lastPredictionError = lastPredictionError || `Process exited with code ${code}`;
+      // Check if stderr contains actual error indicators
+      const hasRealError = /Error|Exception|Traceback|Failed/i.test(stderrBuffer);
+      lastPredictionError = hasRealError ? stderrBuffer.trim() : `Process exited with code ${code}`;
     }
   });
 
@@ -354,9 +366,11 @@ app.get('/health', (req, res) => {
     service: 'ryver', 
     environment: isProduction ? 'production' : 'development',
     influxdb: queryApi ? 'connected' : 'disconnected',
+    dataSource: queryApi ? 'real' : 'mock',
     prediction: {
       lastGeneratedAt: lastPredictionTime,
       lastError: lastPredictionError,
+      lastLog: lastPredictionLog,
       isGenerating: isGeneratingPrediction,
       status: isGeneratingPrediction ? 'generating' : lastPredictionError ? 'error' : lastPredictionTime ? 'success' : 'pending'
     }

@@ -14,13 +14,23 @@ except ImportError:
     sys.exit(1)
 
 load_dotenv()
-INFLUXDB_URL = os.getenv("INFLUXDB_URL", "http://localhost:8086")
+INFLUXDB_URL = os.getenv("INFLUXDB_URL")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
-INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "my-org")
-INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "system_metrics")
+INFLUXDB_ORG = os.getenv("INFLUXDB_ORG")
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET")
 
+# Environment variable validation
+if not INFLUXDB_URL:
+    print("Error: INFLUXDB_URL environment variable is required.")
+    sys.exit(1)
 if not INFLUXDB_TOKEN:
     print("Error: INFLUXDB_TOKEN environment variable strictly required.")
+    sys.exit(1)
+if not INFLUXDB_ORG:
+    print("Error: INFLUXDB_ORG environment variable is required.")
+    sys.exit(1)
+if not INFLUXDB_BUCKET:
+    print("Error: INFLUXDB_BUCKET environment variable is required.")
     sys.exit(1)
 
 def fetch_data():

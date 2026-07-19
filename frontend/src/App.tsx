@@ -81,6 +81,7 @@ function App() {
   const [forecast, setForecast] = useState<ForecastData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dataSource, setDataSource] = useState<'real' | 'mock' | 'unknown'>('unknown');
   const [refreshInterval, setRefreshInterval] = useState(30);
   const [activeTab, setActiveTab] = useState<TabValue>('dashboard');
   const [imageSalt, setImageSalt] = useState(0);
@@ -89,10 +90,11 @@ function App() {
     try {
       setError(null);
 
-      const [liveRes, histRes, foreRes] = await Promise.all([
+      const [liveRes, histRes, foreRes, healthRes] = await Promise.all([
         fetch(`${API_BASE}/api/metrics/live`),
         fetch(`${API_BASE}/api/metrics/history`),
         fetch(`${API_BASE}/api/metrics/forecast`),
+        fetch(`${API_BASE}/health`),
       ]);
 
       if (!liveRes.ok || !histRes.ok || !foreRes.ok) {
@@ -102,14 +104,26 @@ function App() {
       const liveJson: LiveData = await liveRes.json();
       const histJson: HistoryData[] = await histRes.json();
       const foreJson: ForecastData = await foreRes.json();
+      
+      // Check health endpoint for data source
+      if (healthRes.ok) {
+        const healthJson = await healthRes.json();
+        setDataSource(healthJson.dataSource || 'unknown');
+      }
 
       setLive(liveJson);
       setHistory(histJson);
       setForecast(foreJson);
       setImageSalt((prev) => prev + 1);
+      
+      // Only show error if we're actually using mock data
+      if (liveJson.isSimulated) {
+        setError('Realtime telemetry is currently unavailable. Ryver is falling back to a graceful preview experience.');
+      }
     } catch (err: unknown) {
       console.error('Fetch Error:', err);
       setError('Realtime telemetry is currently unavailable. Ryver is falling back to a graceful preview experience.');
+      setDataSource('mock');
     } finally {
       setLoading(false);
     }
@@ -305,15 +319,20 @@ function App() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {live?.isSimulated ? (
+            {dataSource === 'mock' || live?.isSimulated ? (
               <span className="flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-400">
                 <IconAlertCircle className="h-3.5 w-3.5" />
-                Preview Mode
+                Preview Mode (Mock Data)
               </span>
-            ) : (
+            ) : dataSource === 'real' ? (
               <span className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
                 <IconCheck className="h-3.5 w-3.5" />
-                LiveTelemetry
+                Live Telemetry
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 rounded-full border border-zinc-500/20 bg-zinc-500/10 px-2.5 py-1 text-xs font-medium text-zinc-400">
+                <IconActivity className="h-3.5 w-3.5" />
+                Connecting...
               </span>
             )}
 
