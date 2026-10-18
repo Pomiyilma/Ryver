@@ -267,8 +267,8 @@ Retrieves rolling validation metrics evaluating model accuracy against ground tr
 
 ### 1. Clone Repository & Configure Environment
 ```bash
-git clone https://github.com/Pomiyilma/Real-Time-System-Monitor-with-AI-Prediction.git
-cd Real-Time-System-Monitor-with-AI-Prediction
+git clone https://github.com/Pomiyilma/Ryver.git
+cd Ryver
 
 cp .env.example .env
 ```
