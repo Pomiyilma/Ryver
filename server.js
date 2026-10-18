@@ -329,28 +329,117 @@ app.get('/api/metrics/forecast', (req, res) => {
   }
 });
 
-// 4. Forecast PNG Image
-app.get('/api/forecast-image', (req, res) => {
-  const imagePath = path.join(__dirname, 'forecast.png');
-  if (fs.existsSync(imagePath)) {
-    res.sendFile(imagePath);
-  } else {
-    res.setHeader('Content-Type', 'image/svg+xml');
-    res.send(`
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="100%" height="100%">
-        <rect width="800" height="400" fill="#1e1b18" rx="8" />
-        <text x="400" y="180" font-family="system-ui, sans-serif" font-size="20" fill="#f97316" font-weight="600" text-anchor="middle">
-          Prophet Forecast Pending
-        </text>
-        <text x="400" y="220" font-family="system-ui, sans-serif" font-size="14" fill="#a1a1aa" text-anchor="middle">
-          Run 'python predict_metrics.py' locally to generate real-time AI forecasts.
-        </text>
-        <path d="M 100 300 Q 250 150 400 250 T 700 100" fill="none" stroke="#f97316" stroke-width="3" stroke-dasharray="8 4" opacity="0.5" />
-        <path d="M 100 300 Q 250 200 400 280 T 700 180" fill="none" stroke="#3b82f6" stroke-width="2" opacity="0.3" />
-      </svg>
-    `);
+// 4. Forecast Accuracy Metrics
+app.get('/api/forecast-accuracy', async (req, res) => {
+  if (!queryApi) {
+    return res.json({
+      status: 'insufficient_data',
+      message: 'InfluxDB not connected',
+      metrics: null
+    });
+  }
+
+  // Fetch recent accuracy comparisons from InfluxDB
+  const fluxQuery = `
+    from(bucket: "${bucket}")
+      |> range(start: -24h)
+      |> filter(fn: (r) => r._measurement == "forecast_accuracy")
+      |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+  `;
+
+  try {
+    const rows = await runFluxQuery(fluxQuery);
+    
+    if (!rows || rows.length === 0) {
+      return res.json({
+        status: 'insufficient_data',
+        message: 'Not enough comparison data yet. Accuracy metrics will be available after predictions have been compared with actual values.',
+        metrics: null
+      });
+    }
+
+    // Group by metric and calculate statistics
+    const metricsData = {};
+    rows.forEach(row => {
+      const metric = row.metric;
+      if (!metricsData[metric]) {
+        metricsData[metric] = {
+          count: 0,
+          absoluteErrors: [],
+          percentageErrors: [],
+          withinCI: 0
+        };
+      }
+      metricsData[metric].count++;
+      if (row.absolute_error !== undefined) {
+        metricsData[metric].absoluteErrors.push(row.absolute_error);
+      }
+      if (row.percentage_error !== undefined) {
+        metricsData[metric].percentageErrors.push(row.percentage_error);
+      }
+      if (row.within_confidence_interval === true) {
+        metricsData[metric].withinCI++;
+      }
+    });
+
+    // Calculate rolling metrics for each metric
+    const result = {
+      status: 'available',
+      message: 'Accuracy metrics calculated from recent prediction comparisons',
+      metrics: {},
+      summary: {
+        totalComparisons: 0,
+        overallMAE: 0,
+        overallWithinCI: 0,
+        overallWithinCIPercent: 0
+      }
+    };
+
+    let totalComparisons = 0;
+    let allAbsoluteErrors = [];
+    let totalWithinCI = 0;
+
+    Object.keys(metricsData).forEach(metric => {
+      const data = metricsData[metric];
+      const mae = data.absoluteErrors.length > 0 
+        ? data.absoluteErrors.reduce((a, b) => a + b, 0) / data.absoluteErrors.length 
+        : null;
+      const withinCIPercent = data.count > 0 ? (data.withinCI / data.count) * 100 : null;
+
+      result.metrics[metric] = {
+        comparisonCount: data.count,
+        meanAbsoluteError: mae,
+        meanPercentageError: data.percentageErrors.length > 0
+          ? data.percentageErrors.reduce((a, b) => a + b, 0) / data.percentageErrors.length
+          : null,
+        withinConfidenceIntervalPercent: withinCIPercent
+      };
+
+      totalComparisons += data.count;
+      allAbsoluteErrors.push(...data.absoluteErrors);
+      totalWithinCI += data.withinCI;
+    });
+
+    result.summary.totalComparisons = totalComparisons;
+    result.summary.overallMAE = allAbsoluteErrors.length > 0
+      ? allAbsoluteErrors.reduce((a, b) => a + b, 0) / allAbsoluteErrors.length
+      : null;
+    result.summary.overallWithinCI = totalWithinCI;
+    result.summary.overallWithinCIPercent = totalComparisons > 0 
+      ? (totalWithinCI / totalComparisons) * 100 
+      : null;
+
+    res.json(result);
+  } catch (err) {
+    console.error('[InfluxDB] Accuracy Query Error:', err.message);
+    res.json({
+      status: 'error',
+      message: 'Error fetching accuracy metrics',
+      metrics: null
+    });
   }
 });
+
 
 const buildPath = path.join(__dirname, 'frontend', 'build');
 if (fs.existsSync(buildPath)) {

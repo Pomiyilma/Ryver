@@ -10,6 +10,7 @@ import {
   IconDatabase,
   IconExternalLink,
   IconHistory,
+  IconInfoCircle,
   IconLayoutDashboard,
   IconRefresh,
   IconTrendingUp,
@@ -84,17 +85,18 @@ function App() {
   const [dataSource, setDataSource] = useState<'real' | 'mock' | 'unknown'>('unknown');
   const [refreshInterval, setRefreshInterval] = useState(30);
   const [activeTab, setActiveTab] = useState<TabValue>('dashboard');
-  const [imageSalt, setImageSalt] = useState(0);
+  const [accuracyData, setAccuracyData] = useState<any>(null);
 
   const fetchData = useCallback(async () => {
     try {
       setError(null);
 
-      const [liveRes, histRes, foreRes, healthRes] = await Promise.all([
+      const [liveRes, histRes, foreRes, healthRes, accuracyRes] = await Promise.all([
         fetch(`${API_BASE}/api/metrics/live`),
         fetch(`${API_BASE}/api/metrics/history`),
         fetch(`${API_BASE}/api/metrics/forecast`),
         fetch(`${API_BASE}/health`),
+        fetch(`${API_BASE}/api/forecast-accuracy`),
       ]);
 
       if (!liveRes.ok || !histRes.ok || !foreRes.ok) {
@@ -111,10 +113,15 @@ function App() {
         setDataSource(healthJson.dataSource || 'unknown');
       }
 
+      // Fetch accuracy data
+      if (accuracyRes.ok) {
+        const accuracyJson = await accuracyRes.json();
+        setAccuracyData(accuracyJson);
+      }
+
       setLive(liveJson);
       setHistory(histJson);
       setForecast(foreJson);
-      setImageSalt((prev) => prev + 1);
       
       // Only show error if we're actually using mock data
       if (liveJson.isSimulated) {
@@ -189,11 +196,27 @@ function App() {
     const latency = live.response_time_ms ?? 0;
     const status = live.web_status ?? 0;
 
+    // Determine confidence level based on accuracy data
+    const getConfidenceLevel = () => {
+      if (!accuracyData || accuracyData.status !== 'available') {
+        return 'low'; // Insufficient data
+      }
+      const withinCIPercent = accuracyData.summary?.overallWithinCIPercent ?? 0;
+      if (withinCIPercent >= 70) return 'high';
+      if (withinCIPercent >= 50) return 'medium';
+      return 'low';
+    };
+
+    const confidenceLevel = getConfidenceLevel();
+    const useConfidentLanguage = confidenceLevel === 'high';
+    const useConservativeLanguage = confidenceLevel === 'low';
+
+    // Immediate critical conditions (current value based)
     if (cpu > 87) {
       recs.push({
         type: 'critical',
         title: 'CPU is spiking hard',
-        message: 'Your processor is under sustained pressure. Close heavy apps or browser tabs now to reduce lag and keep the system responsive.',
+        message: 'Your processor is under sustained pressure. Check Task Manager for a process using unusually high CPU — background updates or heavy builds are common causes.',
         confidence: 96,
         actionable: true,
         timeToImpact: 'Immediate',
@@ -202,7 +225,7 @@ function App() {
       recs.push({
         type: 'warning',
         title: 'CPU load is climbing',
-        message: 'Your machine is working harder than usual. A short cleanup or lighter workload will keep performance crisp.',
+        message: 'Your machine is working harder than usual. Check Task Manager for background processes or close heavy browser tabs to reduce load.',
         confidence: 84,
         actionable: true,
         timeToImpact: '15–30 min',
@@ -213,7 +236,7 @@ function App() {
       recs.push({
         type: 'critical',
         title: 'RAM is approaching a wall',
-        message: 'Memory is almost exhausted. Close idle apps and browser tabs immediately to avoid freezes or stalled work.',
+        message: 'Memory is almost exhausted. Consider closing memory-heavy apps like browser tabs or IDEs you\'re not actively using.',
         confidence: 98,
         actionable: true,
         timeToImpact: '5–10 min',
@@ -222,7 +245,7 @@ function App() {
       recs.push({
         type: 'warning',
         title: 'Memory pressure is building',
-        message: 'Your RAM is trending upward and could start slowing tasks soon. This is the right moment to trim background activity.',
+        message: 'Your RAM is trending upward and could start slowing tasks soon. Close idle browser tabs or background applications to free up memory.',
         confidence: 82,
         actionable: true,
         timeToImpact: '20–40 min',
@@ -233,53 +256,114 @@ function App() {
       recs.push({
         type: 'warning',
         title: 'The monitored service is unstable',
-        message: `The monitored cloud endpoint is returning ${status}. That often means an outage, a wake-up delay, or routing trouble is affecting your experience.`,
+        message: `The monitored cloud endpoint is returning ${status}. Check Render's status page or your service logs for outage information.`,
         confidence: 92,
-        actionable: false,
+        actionable: true,
         timeToImpact: 'Unknown',
       });
     } else if (latency > 1800) {
       recs.push({
         type: 'warning',
         title: 'Cloud response is lagging',
-        message: 'The monitored app is responding slower than typical. If you are depending on it for work, it is worth monitoring for a few minutes.',
+        message: 'Your deployed app\'s response time is rising — check Render\'s status page or your service logs for performance issues.',
         confidence: 77,
-        actionable: false,
+        actionable: true,
         timeToImpact: 'Ongoing',
       });
     }
 
+    // Predictive insights based on forecast trajectory
     if (forecast && forecast.cpu?.length && forecast.memory?.length) {
-      const futureCpu = forecast.cpu[forecast.cpu.length - 1]?.yhat ?? 0;
-      const futureMem = forecast.memory[forecast.memory.length - 1]?.yhat ?? 0;
-      const cpuTrend = futureCpu - (forecast.cpu[0]?.yhat ?? futureCpu);
-      const memTrend = futureMem - (forecast.memory[0]?.yhat ?? futureMem);
+      // Walk through CPU forecast to find threshold crossings
+      const cpuThreshold = 75;
+      let cpuCrossingIndex = -1;
 
-      if (futureCpu > 75 && cpuTrend > 10) {
-        const estimate = Math.max(20, Math.round((75 - cpu) / Math.max(cpuTrend / 30, 0.25)));
+      for (let i = 0; i < forecast.cpu.length; i++) {
+        const point = forecast.cpu[i];
+        if (point.yhat > cpuThreshold) {
+          cpuCrossingIndex = i;
+          break;
+        }
+      }
+
+      if (cpuCrossingIndex >= 0) {
+        const minutesToCrossing = Math.round(cpuCrossingIndex * 0.5); // Each point is ~30 seconds
+        const verb = useConfidentLanguage ? 'will' : useConservativeLanguage ? 'may' : 'is projected to';
+        const confidenceScore = useConfidentLanguage ? 85 : useConservativeLanguage ? 65 : 75;
+        
         recs.push({
           type: 'warning',
-          title: 'AI forecast: CPU will rise soon',
-          message: `Ryver expects CPU load to climb into a risky zone in roughly ${estimate} minutes unless you reduce the workload.`,
-          confidence: 79,
+          title: `AI forecast: CPU ${verb} reach ${cpuThreshold}%`,
+          message: `CPU is trending upward and ${verb} reach ${cpuThreshold}% in approximately ${minutesToCrossing} minutes based on the current rate of increase. Check for background processes or pause heavy workloads.`,
+          confidence: confidenceScore,
           actionable: true,
-          timeToImpact: `~${estimate} min`,
+          timeToImpact: `~${minutesToCrossing} min`,
         });
       }
 
-      if (futureMem > 82 && memTrend > 4) {
-        const estimate = Math.max(20, Math.round((82 - memory) / Math.max(memTrend / 30, 0.25)));
+      // Walk through Memory forecast to find threshold crossings
+      const memThreshold = 82;
+      let memCrossingIndex = -1;
+
+      for (let i = 0; i < forecast.memory.length; i++) {
+        const point = forecast.memory[i];
+        if (point.yhat > memThreshold) {
+          memCrossingIndex = i;
+          break;
+        }
+      }
+
+      if (memCrossingIndex >= 0) {
+        const minutesToCrossing = Math.round(memCrossingIndex * 0.5);
+        const verb = useConfidentLanguage ? 'will' : useConservativeLanguage ? 'may' : 'is projected to';
+        const confidenceScore = useConfidentLanguage ? 82 : useConservativeLanguage ? 62 : 72;
+        
         recs.push({
           type: 'warning',
-          title: 'AI forecast: memory pressure is approaching',
-          message: `Ryver projects memory usage to become uncomfortable in about ${estimate} minutes. Clearing a few tabs now will make the next hour smoother.`,
-          confidence: 74,
+          title: `AI forecast: RAM ${verb} reach ${memThreshold}%`,
+          message: `RAM is trending upward and ${verb} reach ${memThreshold}% in approximately ${minutesToCrossing} minutes based on the current rate of increase. Close memory-heavy apps like browser tabs or IDEs now.`,
+          confidence: confidenceScore,
           actionable: true,
-          timeToImpact: `~${estimate} min`,
+          timeToImpact: `~${minutesToCrossing} min`,
         });
+      }
+
+      // If no threshold crossings, check overall trend for "all clear" message
+      if (cpuCrossingIndex < 0 && memCrossingIndex < 0) {
+        const cpuStart = forecast.cpu[0]?.yhat ?? cpu;
+        const cpuEnd = forecast.cpu[forecast.cpu.length - 1]?.yhat ?? cpu;
+        const memStart = forecast.memory[0]?.yhat ?? memory;
+        const memEnd = forecast.memory[forecast.memory.length - 1]?.yhat ?? memory;
+
+        const cpuTrend = cpuEnd - cpuStart;
+        const memTrend = memEnd - memStart;
+
+        let trendMessage = '';
+        if (Math.abs(cpuTrend) < 5 && Math.abs(memTrend) < 5) {
+          trendMessage = 'CPU and RAM are stable with no concerning trend over the next 30 minutes.';
+        } else if (cpuTrend < 0 && memTrend < 0) {
+          trendMessage = 'CPU and RAM are trending downward, indicating improving system conditions over the next 30 minutes.';
+        } else if (cpuTrend > 0 || memTrend > 0) {
+          trendMessage = `CPU ${cpuTrend > 0 ? 'is rising slightly' : 'is stable'} and RAM ${memTrend > 0 ? 'is rising slightly' : 'is stable'} over the next 30 minutes, but both remain within healthy ranges.`;
+        } else {
+          trendMessage = 'System metrics show mixed trends but remain within acceptable ranges for the next 30 minutes.';
+        }
+
+        // Only add this if there are no critical warnings
+        if (recs.filter(r => r.type === 'critical').length === 0) {
+          recs.push({
+            type: 'success',
+            title: 'System forecast looks healthy',
+            message: trendMessage,
+            confidence: useConfidentLanguage ? 88 : useConservativeLanguage ? 70 : 78,
+            actionable: false,
+            timeToImpact: 'N/A',
+          });
+        }
       }
     }
 
+    // Fallback success message if no forecast data but system is healthy
     if (recs.length === 0) {
       recs.push({
         type: 'success',
@@ -292,7 +376,7 @@ function App() {
     }
 
     return recs.slice(0, 3);
-  }, [forecast, live]);
+  }, [forecast, live, accuracyData]);
 
   const primaryRecommendation = recommendations[0] ?? null;
 
@@ -302,6 +386,41 @@ function App() {
     } catch {
       return value;
     }
+  };
+
+  const formatTooltipLabel = (value: any) => {
+    try {
+      const date = new Date(value);
+      if (isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return value;
+    }
+  };
+
+  const fillMissingDataPoints = (data: HistoryData[]): HistoryData[] => {
+    if (!data || data.length === 0) return data;
+    
+    const filled = [...data];
+    const now = Date.now();
+    const oneHourAgo = now - 60 * 60 * 1000;
+    
+    for (let i = 0; i < 60; i++) {
+      const targetTime = new Date(oneHourAgo + i * 60 * 1000).toISOString();
+      const exists = data.some(item => {
+        const itemTime = new Date(item.time).getTime();
+        const targetTimeMs = new Date(targetTime).getTime();
+        return Math.abs(itemTime - targetTimeMs) < 30000;
+      });
+      
+      if (!exists) {
+        filled.push({ time: targetTime, cpu: undefined, memory: undefined, response_time_ms: undefined });
+      }
+    }
+    
+    return filled.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
   };
 
   return (
@@ -344,6 +463,7 @@ function App() {
                 className="bg-transparent pr-1 outline-none"
               >
                 <option value={5} className="bg-[#090b0f]">5s</option>
+                <option value={10} className="bg-[#090b0f]">10s</option>
                 <option value={15} className="bg-[#090b0f]">15s</option>
                 <option value={30} className="bg-[#090b0f]">30s</option>
                 <option value={60} className="bg-[#090b0f]">60s</option>
@@ -449,15 +569,15 @@ function App() {
             </div>
             <div className="mt-6 h-44">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history}>
+                <AreaChart data={fillMissingDataPoints(history)}>
                   <defs>
                     <linearGradient id="cardCpuGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
                       <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTime(String(value))} />
-                  <Area type="monotone" dataKey="cpu" stroke="#f97316" strokeWidth={2.5} fill="url(#cardCpuGradient)" />
+                  <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTooltipLabel(value)} />
+                  <Area type="monotone" dataKey="cpu" stroke="#f97316" strokeWidth={2.5} fill="url(#cardCpuGradient)" connectNulls={false} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -476,15 +596,15 @@ function App() {
             </div>
             <div className="mt-6 h-44">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history}>
+                <AreaChart data={fillMissingDataPoints(history)}>
                   <defs>
                     <linearGradient id="cardMemGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
                       <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTime(String(value))} />
-                  <Area type="monotone" dataKey="memory" stroke="#3b82f6" strokeWidth={2.5} fill="url(#cardMemGradient)" />
+                  <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTooltipLabel(value)} />
+                  <Area type="monotone" dataKey="memory" stroke="#3b82f6" strokeWidth={2.5} fill="url(#cardMemGradient)" connectNulls={false} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -569,26 +689,47 @@ function App() {
                 </div>
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-[11px] uppercase tracking-[0.25em] text-zinc-500">Latency</p>
+                  <div className="group relative rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] uppercase tracking-[0.25em] text-zinc-500">Latency</p>
+                      <IconInfoCircle className="h-3.5 w-3.5 text-zinc-500 opacity-50 group-hover:opacity-100 transition-opacity" />
+                    </div>
                     <p className="mt-2 text-2xl font-semibold text-white">{live?.response_time_ms || 0} ms</p>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden w-48 rounded-lg bg-black/90 px-3 py-2 text-xs text-zinc-200 group-hover:block z-10">
+                      How long the deployed app took to respond to the last ping
+                    </div>
                   </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-[11px] uppercase tracking-[0.25em] text-zinc-500">HTTP</p>
+                  <div className="group relative rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] uppercase tracking-[0.25em] text-zinc-500">HTTP</p>
+                      <IconInfoCircle className="h-3.5 w-3.5 text-zinc-500 opacity-50 group-hover:opacity-100 transition-opacity" />
+                    </div>
                     <p className="mt-2 text-2xl font-semibold text-white">{live?.web_status || 'N/A'}</p>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden w-48 rounded-lg bg-black/90 px-3 py-2 text-xs text-zinc-200 group-hover:block z-10">
+                      Status code from last ping (200 = healthy, 5xx = error)
+                    </div>
                   </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <a href="https://real-time-system-monitor-with-ai.onrender.com" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1 text-sm font-semibold text-brand-orange hover:underline">
-                      Open app
-                      <IconExternalLink className="h-3.5 w-3.5" />
-                    </a>
+                  <div className="group relative rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <a href="https://real-time-system-monitor-with-ai.onrender.com" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1 text-sm font-semibold text-brand-orange hover:underline">
+                        Open app
+                        <IconExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                      <IconInfoCircle className="h-3.5 w-3.5 text-zinc-500 opacity-50 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden w-48 rounded-lg bg-black/90 px-3 py-2 text-xs text-zinc-200 group-hover:block z-10">
+                      Opens the monitored cloud endpoint in a new tab
+                    </div>
                   </div>
                 </div>
 
-                <div className="mt-5 rounded-2xl border border-brand-orange/20 bg-brand-orange/10 p-4 text-sm text-zinc-300">
-                  <div className="flex items-center gap-2 text-white">
-                    <IconTrendingUp className="h-4 w-4 text-brand-orange" />
-                    Forecast posture
+                <div className="group relative mt-5 rounded-2xl border border-brand-orange/20 bg-brand-orange/10 p-4 text-sm text-zinc-300">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-white">
+                      <IconTrendingUp className="h-4 w-4 text-brand-orange" />
+                      Forecast posture
+                    </div>
+                    <IconInfoCircle className="h-3.5 w-3.5 text-zinc-500 opacity-50 group-hover:opacity-100 transition-opacity" />
                   </div>
                   <p className="mt-2 text-sm leading-6">
                     {healthScore > 75
@@ -597,6 +738,9 @@ function App() {
                         ? 'Watch the next stretch carefully, especially if more apps open.'
                         : 'The system is under pressure; a quick reset or lighter workload is recommended.'}
                   </p>
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden w-56 rounded-lg bg-black/90 px-3 py-2 text-xs text-zinc-200 group-hover:block z-10">
+                    Qualitative assessment based on CPU, RAM, web status, and latency trends
+                  </div>
                 </div>
               </div>
             )}
@@ -619,7 +763,7 @@ function App() {
                           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                           <XAxis dataKey="time" stroke="rgba(255,255,255,0.3)" fontSize={10} />
                           <YAxis stroke="rgba(255,255,255,0.3)" fontSize={10} domain={[0, 100]} />
-                          <Tooltip contentStyle={{ background: '#11131b', border: '1px solid rgba(255,255,255,0.08)' }} />
+                          <Tooltip contentStyle={{ background: '#11131b', border: '1px solid rgba(255,255,255,0.08)' }} labelFormatter={(value) => formatTooltipLabel(value)} />
                           <Line type="monotone" dataKey="CPU Prediction" stroke="#f97316" strokeWidth={2.5} dot={false} />
                           <Line type="monotone" dataKey="RAM Prediction" stroke="#3b82f6" strokeWidth={2} dot={false} />
                         </LineChart>
@@ -631,13 +775,6 @@ function App() {
                     Forecast data is not available yet. Run the predictor locally to generate Prophet-based charts.
                   </div>
                 )}
-
-                <div className="rounded-[24px] border border-white/10 bg-[#0f1115]/90 p-6">
-                  <h3 className="text-sm font-semibold text-white">Prophet forecast image</h3>
-                  <div className="mt-4 flex items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-4">
-                    <img src={`${API_BASE}/api/forecast-image?salt=${imageSalt}`} alt="Prophet forecast graphics" className="max-h-[560px] w-full max-w-4xl rounded-xl object-contain" />
-                  </div>
-                </div>
               </div>
             )}
 

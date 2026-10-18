@@ -3,11 +3,11 @@ import sys
 import pandas as pd
 from datetime import datetime
 from dateutil import tz
-import matplotlib.pyplot as plt
 
 try:
     from dotenv import load_dotenv
-    from influxdb_client import InfluxDBClient
+    from influxdb_client import InfluxDBClient, Point
+    from influxdb_client.client.write_api import SYNCHRONOUS
     from prophet import Prophet
 except ImportError:
     print("Error: Missing required predictor libraries.")
@@ -96,39 +96,170 @@ def train_and_predict(df, name, freq='5s', periods=360):
     future = model.make_future_dataframe(periods=periods, freq=freq)
     return model.predict(future)
 
-def plot_forecasts(df_cpu, forecast_cpu, df_mem, forecast_mem, df_web, forecast_web):
-    num_plots = 3 if not df_web.empty and forecast_web is not None else 2
-    fig, axes = plt.subplots(num_plots, 1, figsize=(12, 5 * num_plots))
-    if num_plots == 2:
-        (ax1, ax2) = axes
-    else:
-        (ax1, ax2, ax3) = axes
+def store_forecast_predictions(forecast_cpu, forecast_mem, forecast_web):
+    """Store forecast predictions in InfluxDB for later accuracy comparison."""
+    client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+    write_api = client.write_api(write_options=SYNCHRONOUS)
+    
+    prediction_time = datetime.now()
+    
+    # Store CPU predictions (future points only)
+    if forecast_cpu is not None and not forecast_cpu.empty:
+        # Get only future predictions (where ds > current time)
+        current_time = prediction_time
+        future_cpu = forecast_cpu[forecast_cpu['ds'] > current_time].head(60)  # Store next 60 points
+        
+        for _, row in future_cpu.iterrows():
+            point = (
+                Point("forecast_predictions")
+                .tag("metric", "cpu_usage")
+                .tag("prediction_time", prediction_time.strftime("%Y-%m-%dT%H:%M:%S"))
+                .field("predicted_value", float(row['yhat']))
+                .field("predicted_lower", float(row['yhat_lower']))
+                .field("predicted_upper", float(row['yhat_upper']))
+                .time(row['ds'])
+            )
+            write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=point)
+    
+    # Store Memory predictions
+    if forecast_mem is not None and not forecast_mem.empty:
+        future_mem = forecast_mem[forecast_mem['ds'] > current_time].head(60)
+        
+        for _, row in future_mem.iterrows():
+            point = (
+                Point("forecast_predictions")
+                .tag("metric", "memory_usage")
+                .tag("prediction_time", prediction_time.strftime("%Y-%m-%dT%H:%M:%S"))
+                .field("predicted_value", float(row['yhat']))
+                .field("predicted_lower", float(row['yhat_lower']))
+                .field("predicted_upper", float(row['yhat_upper']))
+                .time(row['ds'])
+            )
+            write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=point)
+    
+    # Store Web predictions if available
+    if forecast_web is not None and not forecast_web.empty:
+        future_web = forecast_web[forecast_web['ds'] > current_time].head(30)
+        
+        for _, row in future_web.iterrows():
+            point = (
+                Point("forecast_predictions")
+                .tag("metric", "response_time_ms")
+                .tag("prediction_time", prediction_time.strftime("%Y-%m-%dT%H:%M:%S"))
+                .field("predicted_value", float(row['yhat']))
+                .field("predicted_lower", float(row['yhat_lower']))
+                .field("predicted_upper", float(row['yhat_upper']))
+                .time(row['ds'])
+            )
+            write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=point)
+    
+    write_api.close()
+    client.close()
+    print(f"Stored forecast predictions in InfluxDB for accuracy tracking")
 
-    # Plot CPU
-    ax1.plot(df_cpu['ds'], df_cpu['y'], label='Actual CPU Usage (%)', color='blue')
-    ax1.plot(forecast_cpu['ds'], forecast_cpu['yhat'], label='Predicted', color='red', linestyle='dashed')
-    ax1.fill_between(forecast_cpu['ds'], forecast_cpu['yhat_lower'], forecast_cpu['yhat_upper'], color='red', alpha=0.2)
-    ax1.set_title("CPU Usage Forecast")
-    ax1.grid(True)
+def compare_predictions_with_actuals():
+    """Compare past predictions with actual values and calculate accuracy metrics."""
+    client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+    query_api = client.query_api()
+    write_api = client.write_api(write_options=SYNCHRONOUS)
     
-    # Plot Memory
-    ax2.plot(df_mem['ds'], df_mem['y'], label='Actual Memory Usage (%)', color='green')
-    ax2.plot(forecast_mem['ds'], forecast_mem['yhat'], label='Predicted', color='orange', linestyle='dashed')
-    ax2.fill_between(forecast_mem['ds'], forecast_mem['yhat_lower'], forecast_mem['yhat_upper'], color='orange', alpha=0.2)
-    ax2.set_title("Memory Usage Forecast")
-    ax2.grid(True)
+    now = datetime.now()
     
-    # Plot Web Speed Optional
-    if num_plots == 3:
-        ax3.plot(df_web['ds'], df_web['y'], label='Actual Response Time (ms)', color='purple')
-        ax3.plot(forecast_web['ds'], forecast_web['yhat'], label='Predicted', color='magenta', linestyle='dashed')
-        ax3.fill_between(forecast_web['ds'], forecast_web['yhat_lower'], forecast_web['yhat_upper'], color='magenta', alpha=0.2)
-        ax3.set_title("Cloud Response Time Forecast")
-        ax3.grid(True)
+    # Fetch predictions that are now in the past (predicted timestamp < now)
+    # and haven't been compared yet (no comparison record exists)
+    query_predictions = f"""
+    from(bucket: "{INFLUXDB_BUCKET}")
+      |> range(start: -2h)
+      |> filter(fn: (r) => r._measurement == "forecast_predictions")
+      |> filter(fn: (r) => r._time < now())
+      |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+    """
     
-    plt.tight_layout()
-    plt.savefig('forecast.png')
-    print("Successfully generated blueprint graphs in 'forecast.png'")
+    try:
+        tables_pred = query_api.query(query_predictions, org=INFLUXDB_ORG)
+        
+        if not tables_pred:
+            print("No past predictions found for comparison")
+            client.close()
+            return
+        
+        comparisons_made = 0
+        
+        for table in tables_pred:
+            for record in table.records:
+                pred_time = record.get_time()
+                metric = record.values.get('metric')
+                predicted_value = record.values.get('predicted_value')
+                predicted_lower = record.values.get('predicted_lower')
+                predicted_upper = record.values.get('predicted_upper')
+                prediction_time_str = record.values.get('prediction_time')
+                
+                if not all([metric, predicted_value, pred_time]):
+                    continue
+                
+                # Map metric to actual measurement
+                if metric == 'cpu_usage':
+                    actual_measurement = 'cpu_usage'
+                    actual_measurement_type = 'system_metrics'
+                elif metric == 'memory_usage':
+                    actual_measurement = 'memory_usage'
+                    actual_measurement_type = 'system_metrics'
+                elif metric == 'response_time_ms':
+                    actual_measurement = 'response_time_ms'
+                    actual_measurement_type = 'web_monitor'
+                else:
+                    continue
+                
+                # Fetch actual value at the predicted timestamp
+                query_actual = f"""
+                from(bucket: "{INFLUXDB_BUCKET}")
+                  |> range(start: {pred_time.replace(tzinfo=None).isoformat()}Z - 1m, stop: {pred_time.replace(tzinfo=None).isoformat()}Z + 1m)
+                  |> filter(fn: (r) => r._measurement == "{actual_measurement_type}")
+                  |> filter(fn: (r) => r._field == "{actual_measurement}")
+                  |> mean()
+                """
+                
+                tables_actual = query_api.query(query_actual, org=INFLUXDB_ORG)
+                
+                if tables_actual:
+                    for actual_table in tables_actual:
+                        for actual_record in actual_table.records:
+                            actual_value = actual_record.get_value()
+                            
+                            if actual_value is None:
+                                continue
+                            
+                            # Calculate error metrics
+                            absolute_error = abs(predicted_value - actual_value)
+                            percentage_error = (absolute_error / actual_value) * 100 if actual_value != 0 else 0
+                            
+                            # Check if actual value fell within confidence interval
+                            within_ci = predicted_lower <= actual_value <= predicted_upper if predicted_lower and predicted_upper else None
+                            
+                            # Store the comparison result
+                            comparison_point = (
+                                Point("forecast_accuracy")
+                                .tag("metric", metric)
+                                .tag("prediction_time", prediction_time_str)
+                                .field("predicted_value", float(predicted_value))
+                                .field("actual_value", float(actual_value))
+                                .field("absolute_error", float(absolute_error))
+                                .field("percentage_error", float(percentage_error))
+                                .field("within_confidence_interval", within_ci if within_ci is not None else False)
+                                .time(pred_time)
+                            )
+                            write_api.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=comparison_point)
+                            comparisons_made += 1
+        
+        write_api.close()
+        client.close()
+        print(f"Completed {comparisons_made} prediction comparisons")
+        
+    except Exception as e:
+        print(f"Error during prediction comparison: {e}")
+        write_api.close()
+        client.close()
+
 
 def export_forecast_json(forecast_cpu, forecast_mem, forecast_web):
     import json
@@ -171,6 +302,7 @@ if __name__ == "__main__":
         # Cloud runs every 60s -> forecast next 30 mins (30 * 60s)
         forecast_web = train_and_predict(df_web, "Web Response", freq='60s', periods=30)
         
-    plot_forecasts(df_cpu, forecast_cpu, df_mem, forecast_mem, df_web, forecast_web)
+    store_forecast_predictions(forecast_cpu, forecast_mem, forecast_web)
+    compare_predictions_with_actuals()
     export_forecast_json(forecast_cpu, forecast_mem, forecast_web)
 
